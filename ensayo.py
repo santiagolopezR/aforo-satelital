@@ -73,11 +73,48 @@ def procesar_landsat(item, potreros, config, exclusiones):
     return filas
 
 
+def armonizar_landsat(mejor):
+    """
+    Landsat lee distinto que Sentinel-2. Con los pares del mismo potrero y ±1 día (ambos despejados)
+    se ajusta NDVI_S2 = a + b · NDVI_Landsat y se aplica a Landsat.
+    """
+    s2 = {(r["potrero"], r["fecha"]): r for r in mejor.values() if r["sensor"] == "S2" and float(r["pct_valido"]) >= 0.8}
+    xs, ys = [], []
+    for r in mejor.values():
+        if r["sensor"] != "L" or float(r["pct_valido"]) < 0.8:
+            continue
+        f = dt.date.fromisoformat(r["fecha"])
+        for d in (0, -1, 1):
+            o = s2.get((r["potrero"], (f + dt.timedelta(days=d)).isoformat()))
+            if o:
+                xs.append(float(r["ndvi"])); ys.append(float(o["ndvi"]))
+                break
+    if len(xs) < 10:
+        return {"a": 0.0, "b": 1.0, "pares": len(xs)}
+    b, a = np.polyfit(xs, ys, 1)
+    return {"a": round(float(a), 4), "b": round(float(b), 4), "pares": len(xs)}
+
+
+def hist_armonizado(hist, a, b):
+    """Pasa cada clase del histograma de NDVI por la recta de armonización."""
+    nuevo = {}
+    for par in hist.split():
+        i, c = (int(v) for v in par.split(":"))
+        centro = a + b * (aforo.HIST_MIN + (i + 0.5) * aforo.HIST_PASO)
+        j = int(min(max((centro - aforo.HIST_MIN) / aforo.HIST_PASO, 0), aforo.HIST_N - 1))
+        nuevo[j] = nuevo.get(j, 0) + c
+    return " ".join(f"{j}:{c}" for j, c in sorted(nuevo.items()))
+
+
 def pastoreos_vistos(serie, caida):
-    """Bajones fuertes entre observaciones ópticas despejadas seguidas = pastoreo entre esas fechas."""
+    """
+    Bajones fuertes entre observaciones despejadas seguidas = pastoreo entre esas fechas.
+    Se mide contra la mediana de la rotación ese día ("rel"): si toda la rotación baja junta es la imagen
+    (bruma, atmósfera), no el ganado, porque solo unos pocos potreros se pastorean a la vez.
+    """
     eventos = []
     for a, b in zip(serie, serie[1:]):
-        if b["kg"] - a["kg"] <= -caida:
+        if b["rel"] - a["rel"] <= -caida:
             fa, fb = dt.date.fromisoformat(a["f"]), dt.date.fromisoformat(b["f"])
             medio = fa + (fb - fa) / 2
             if eventos and (medio - dt.date.fromisoformat(eventos[-1]["medio"])).days < 12:
@@ -129,21 +166,40 @@ def main(rotacion, dias):
         if k not in mejor or float(r["pct_valido"]) > float(mejor[k]["pct_valido"]):
             mejor[k] = r
     aforos = aforo.leer_aforos(potreros)
+    arm = armonizar_landsat(mejor)
+    log(f"Armonización Landsat -> Sentinel-2: NDVI_S2 = {arm['a']} + {arm['b']} · NDVI_L ({arm['pares']} pares)")
+    for r in mejor.values():
+        if r["sensor"] == "L" and r.get("hist"):
+            r["hist"] = hist_armonizado(r["hist"], arm["a"], arm["b"])
+            r["ndvi"] = round(arm["a"] + arm["b"] * float(r["ndvi"]), 4)
+        if r["sensor"] in ("S2", "L") and r.get("hist"):
+            r["kg"] = aforo.estimar_por_pixel(r["hist"], r["especie"], config)[1]
+
+    # Mediana de la rotación por fecha y sensor (solo fechas con suficientes potreros despejados).
+    por_fecha = {}
+    for r in mejor.values():
+        if "kg" in r and float(r["pct_valido"]) >= 0.8:
+            por_fecha.setdefault((r["fecha"], r["sensor"]), []).append(r["kg"])
+    minimo = max(5, len(potreros) // 3)
+    mediana = {k: statistics.median(v) for k, v in por_fecha.items() if len(v) >= minimo}
 
     salida = {"rotacion": rotacion.upper(), "desde": desde.isoformat(), "hasta": hoy.isoformat(),
-              "generado": dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes"), "potreros": []}
+              "generado": dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes"), "potreros": [],
+              "armonizacion": arm,
+              "mediana_rotacion": [{"f": f, "s": sen, "kg": round(v, 3)} for (f, sen), v in sorted(mediana.items())]}
     ciclos = []
     for p in potreros:
         mias = sorted((r for r in mejor.values() if r["potrero"] == p["nombre"]), key=lambda r: r["fecha"])
         optico = []
         for r in mias:
-            if r["sensor"] in ("S2", "L") and r.get("hist"):
-                kg = aforo.estimar_por_pixel(r["hist"], p["especie"], config)[1]
-                optico.append({"f": r["fecha"], "s": r["sensor"], "kg": kg, "ndvi": float(r["ndvi"]),
-                               "v": float(r["pct_valido"])})
+            if "kg" in r:
+                med = mediana.get((r["fecha"], r["sensor"]))
+                optico.append({"f": r["fecha"], "s": r["sensor"], "kg": r["kg"], "ndvi": float(r["ndvi"]),
+                               "v": float(r["pct_valido"]),
+                               "rel": round(r["kg"] - med, 3) if med is not None else None})
         radar = [{"f": r["fecha"], "vh": float(r["vh_db"]), "vv": float(r["vv_db"])}
                  for r in mias if r["sensor"] == "S1" and r.get("vh_db") not in ("", None)]
-        limpias = [o for o in optico if o["v"] >= 0.8]
+        limpias = [o for o in optico if o["v"] >= 0.8 and o["rel"] is not None]
         eventos = pastoreos_vistos(limpias, config["pastoreo"]["caida_minima_kg"])
         ciclos += [e["dias_desde_anterior"] for e in eventos if "dias_desde_anterior" in e]
         salida["potreros"].append({
