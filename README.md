@@ -66,6 +66,27 @@ También se pueden escribir directamente en `aforos_campo/aforos.csv`.
 
 **Modelo:** `kg MS/ha = k · (e^(b · (NDVI − 0,25)) − 1)`; con NDVI de suelo desnudo (≤ 0,25) da 0.
 
+## Árboles y bosques (no cuentan como pasto)
+Un cuadrito de 10 m con más de la mitad bajo árboles se saca del NDVI, de los kilos y del área en pasto.
+En el mapa de detalle se pintan en verde intenso.
+
+- **`exclusiones/arboles.tif`**: la máscara que se usa (1,2 m). Se arma con:
+  - **Ortomosaicos de dron** (donde hay; el más reciente manda) con `arboles_dron.py`.
+  - **Altura de árboles de Meta** (`exclusiones/arboles_meta.tif`, ≥ 3 m) donde no hay dron, p. ej. Primavera.
+- **`exclusiones/bosques.geojson`**: los bosques de la capa QGIS.
+- **Cualquier otro polígono** (KML/KMZ/GeoJSON) que se suba a `exclusiones/` también se excluye.
+
+**Revisar en Google Earth:** en el mapa web, "Descargar árboles detectados para Google Earth (KMZ)".
+Si sobra un árbol, avisar; si falta, dibujarlo en Google Earth y subir el KMZ a `exclusiones/`.
+
+**Con un ortomosaico nuevo** (en el PC donde están las imágenes, que nunca se suben):
+
+```
+python arboles_dron.py "D:/MAPA Puerto parra Claude/03_ortomosaicos"
+```
+
+y subir `exclusiones/arboles.tif` y `docs/arboles.kmz`. El resto se recalcula solo.
+
 ## Limitaciones
 - El píxel es de 10 m: potreros de menos de ~0,3 ha dan datos pobres.
 - Con muchas semanas nubladas, el dato queda viejo (el tablero avisa si tiene más de 10 días).

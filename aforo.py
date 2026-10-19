@@ -52,7 +52,9 @@ COLUMNAS = ["fecha", "potrero", "especie", "sensor", "escena", "pct_valido",
             "pct_arboles", "mascara"]
 CARPETA_PIXELES = RAIZ / "docs" / "pixeles"
 CARPETA_EXCLUSIONES = RAIZ / "exclusiones"
-MASCARA_ARBOLES = CARPETA_EXCLUSIONES / "arboles_altura.tif"
+MASCARA_ARBOLES = CARPETA_EXCLUSIONES / "arboles.tif"         # la que se usa (Meta + ortomosaicos de dron)
+MASCARA_META = CARPETA_EXCLUSIONES / "arboles_meta.tif"       # solo alturas de Meta, base y respaldo
+KMZ_ARBOLES = RAIZ / "docs" / "arboles.kmz"
 # Alturas de árboles de Meta / World Resources Institute (1 m, gratis), en cuadros "quadkey" de nivel 9.
 URL_ALTURAS = "https://dataforgood-fb-data.s3.amazonaws.com/forests/v1/alsgedi_global_v6_float/chm/{}.tif"
 COD_ARBOL = 255  # código del píxel excluido en la imagen del mapa de detalle
@@ -240,7 +242,8 @@ def quadkey(lon, lat, nivel=9):
 def generar_mascara_arboles(potreros, config):
     """
     Una sola vez: baja las alturas de árboles (1 m) sobre la finca y guarda 1 donde hay árbol
-    (altura >= altura_arbol_m). Para regenerarla, se borra exclusiones/arboles_altura.tif.
+    (altura >= altura_arbol_m). Para regenerarla, se borra exclusiones/arboles_meta.tif.
+    La máscara final (arboles.tif) arranca igual y arboles_dron.py la mejora con los ortomosaicos.
     """
     oeste, sur, este, norte = unary_union([p["geom"] for p in potreros]).buffer(0.001).bounds
     claves = sorted({quadkey(x, y) for x in (oeste, este) for y in (sur, norte)})
@@ -256,11 +259,55 @@ def generar_mascara_arboles(potreros, config):
             f.close()
     arbol = (alturas[0] >= config["altura_arbol_m"]).astype("uint8")
     CARPETA_EXCLUSIONES.mkdir(parents=True, exist_ok=True)
-    with rasterio.open(MASCARA_ARBOLES, "w", driver="GTiff", width=arbol.shape[1], height=arbol.shape[0],
+    with rasterio.open(MASCARA_META, "w", driver="GTiff", width=arbol.shape[1], height=arbol.shape[0],
                        count=1, dtype="uint8", crs="EPSG:3857", transform=transf, compress="deflate",
                        nbits=1) as dst:
         dst.write(arbol, 1)
     log(f"  Máscara lista: {arbol.mean() * 100:.1f} % del área con árboles de {config['altura_arbol_m']} m o más")
+
+
+def exportar_kmz_arboles():
+    """Árboles detectados + bosques en un KMZ para revisarlos sobre Google Earth (docs/arboles.kmz)."""
+    import zipfile
+    from rasterio.features import shapes
+    from xml.sax.saxutils import escape
+    if not MASCARA_ARBOLES.exists():
+        return
+    with rasterio.open(MASCARA_ARBOLES) as src:
+        m = src.read(1)
+        a4326 = Transformer.from_crs(src.crs, 4326, always_xy=True).transform
+        poligonos = [shape(g).simplify(0.6) for g, v in shapes(m, mask=m > 0, transform=src.transform) if v]
+
+    def kml_poligono(g):
+        partes = []
+        for pol in (g.geoms if g.geom_type == "MultiPolygon" else [g]):
+            def anillo(c):
+                return " ".join(f"{x:.7f},{y:.7f},0" for x, y in c)
+            huecos = "".join(f"<innerBoundaryIs><LinearRing><coordinates>{anillo(i.coords)}</coordinates></LinearRing></innerBoundaryIs>"
+                             for i in pol.interiors)
+            partes.append(f"<Polygon><outerBoundaryIs><LinearRing><coordinates>{anillo(pol.exterior.coords)}"
+                          f"</coordinates></LinearRing></outerBoundaryIs>{huecos}</Polygon>")
+        return "".join(partes)
+
+    marcas = [f"<Placemark><styleUrl>#arbol</styleUrl>{kml_poligono(shp_transform(a4326, g))}</Placemark>"
+              for g in poligonos if not g.is_empty]
+    bosques = [f"<Placemark><name>{escape(str(z.get('nombre', '')))}</name><styleUrl>#bosque</styleUrl>{kml_poligono(z['geom'])}</Placemark>"
+               for z in _leer_geojson(CARPETA_EXCLUSIONES / "bosques.geojson")] if (CARPETA_EXCLUSIONES / "bosques.geojson").exists() else []
+    kml = ('<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document>'
+           "<name>Árboles detectados (aforo satelital)</name>"
+           '<Style id="arbol"><LineStyle><color>ff76e600</color><width>1.5</width></LineStyle><PolyStyle><color>5576e600</color></PolyStyle></Style>'
+           '<Style id="bosque"><LineStyle><color>ff00ffff</color><width>2</width></LineStyle><PolyStyle><fill>0</fill></PolyStyle></Style>'
+           f"<Folder><name>Árboles detectados ({len(marcas)})</name>{''.join(marcas)}</Folder>"
+           f"<Folder><name>Bosques (capa QGIS)</name>{''.join(bosques)}</Folder>"
+           "</Document></kml>")
+    KMZ_ARBOLES.parent.mkdir(parents=True, exist_ok=True)
+    nuevo = KMZ_ARBOLES.with_suffix(".tmp")
+    with zipfile.ZipFile(nuevo, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr(zipfile.ZipInfo("doc.kml", date_time=(2026, 1, 1, 0, 0, 0)), kml)  # fecha fija: sin cambios falsos en git
+    if KMZ_ARBOLES.exists() and KMZ_ARBOLES.read_bytes() == nuevo.read_bytes():
+        nuevo.unlink()
+    else:
+        nuevo.replace(KMZ_ARBOLES)
 
 
 def cargar_exclusiones():
@@ -284,6 +331,7 @@ def huella_mascara(config):
         for ruta in sorted(CARPETA_EXCLUSIONES.iterdir()):
             if ruta.suffix.lower() in (".geojson", ".json", ".kml", ".kmz"):
                 h.update(ruta.name.encode() + ruta.read_bytes())
+    # (arboles_meta.tif no entra: solo cuenta la máscara final arboles.tif)
     return h.hexdigest()[:10]
 
 
@@ -897,9 +945,12 @@ def main():
     # Árboles y bosques: se generan una vez y cualquier cambio en la máscara obliga a reprocesar.
     if not MASCARA_ARBOLES.exists():
         try:
-            generar_mascara_arboles(potreros, config)
+            if not MASCARA_META.exists():
+                generar_mascara_arboles(potreros, config)
+            MASCARA_ARBOLES.write_bytes(MASCARA_META.read_bytes())
         except Exception as e:
             log(f"  ! No se pudo generar la máscara de árboles (se usan solo los polígonos de exclusiones/): {e}")
+    exportar_kmz_arboles()
     exclusiones = cargar_exclusiones()
     huella = huella_mascara(config)
     # Se reprocesan las filas hechas con otra máscara (o antes del cálculo por píxel).
