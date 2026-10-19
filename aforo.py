@@ -34,7 +34,9 @@ from pyproj import Transformer
 from rasterio.enums import Resampling
 from rasterio.errors import NotGeoreferencedWarning, WindowError
 from rasterio.features import geometry_mask, rasterize
+from rasterio.merge import merge as unir_rasters
 from rasterio.warp import Resampling as ResamplingWarp, calculate_default_transform, reproject
+import hashlib
 from rasterio.windows import Window, from_bounds
 from shapely.geometry import MultiPolygon, Polygon, box, mapping, shape
 from shapely.ops import transform as shp_transform, unary_union
@@ -46,8 +48,14 @@ SALIDA_WEB = RAIZ / "docs" / "datos.json"
 STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
 
 COLUMNAS = ["fecha", "potrero", "especie", "sensor", "escena", "pct_valido",
-            "ndvi", "evi", "ndre", "msavi", "vv_db", "vh_db", "kg_ms_ha", "kg_fv_m2", "pct_pobre", "hist"]
+            "ndvi", "evi", "ndre", "msavi", "vv_db", "vh_db", "kg_ms_ha", "kg_fv_m2", "pct_pobre", "hist",
+            "pct_arboles", "mascara"]
 CARPETA_PIXELES = RAIZ / "docs" / "pixeles"
+CARPETA_EXCLUSIONES = RAIZ / "exclusiones"
+MASCARA_ARBOLES = CARPETA_EXCLUSIONES / "arboles_altura.tif"
+# Alturas de árboles de Meta / World Resources Institute (1 m, gratis), en cuadros "quadkey" de nivel 9.
+URL_ALTURAS = "https://dataforgood-fb-data.s3.amazonaws.com/forests/v1/alsgedi_global_v6_float/chm/{}.tif"
+COD_ARBOL = 255  # código del píxel excluido en la imagen del mapa de detalle
 
 # Histograma del NDVI de los píxeles de cada potrero: clases de 0,01 entre -0,2 y 1,0.
 HIST_MIN, HIST_PASO, HIST_N = -0.2, 0.01, 120
@@ -216,6 +224,83 @@ def cargar_potreros(config):
         except Exception as e:  # un archivo dañado no debe frenar a los demás
             log(f"  ! No se pudo leer {ruta.name}: {e}")
     return potreros
+
+
+def quadkey(lon, lat, nivel=9):
+    n = 2 ** nivel
+    x = int((lon + 180) / 360 * n)
+    y = int((1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * n)
+    q = ""
+    for i in range(nivel, 0, -1):
+        m = 1 << (i - 1)
+        q += str((1 if x & m else 0) + (2 if y & m else 0))
+    return q
+
+
+def generar_mascara_arboles(potreros, config):
+    """
+    Una sola vez: baja las alturas de árboles (1 m) sobre la finca y guarda 1 donde hay árbol
+    (altura >= altura_arbol_m). Para regenerarla, se borra exclusiones/arboles_altura.tif.
+    """
+    oeste, sur, este, norte = unary_union([p["geom"] for p in potreros]).buffer(0.001).bounds
+    claves = sorted({quadkey(x, y) for x in (oeste, este) for y in (sur, norte)})
+    log(f"Generando máscara de árboles (cuadros {', '.join(claves)})...")
+    a3857 = Transformer.from_crs(4326, 3857, always_xy=True).transform
+    x0, y0 = a3857(oeste, sur)
+    x1, y1 = a3857(este, norte)
+    fuentes = [rasterio.open("/vsicurl/" + URL_ALTURAS.format(c)) for c in claves]
+    try:
+        alturas, transf = unir_rasters(fuentes, bounds=(x0, y0, x1, y1), nodata=0)
+    finally:
+        for f in fuentes:
+            f.close()
+    arbol = (alturas[0] >= config["altura_arbol_m"]).astype("uint8")
+    CARPETA_EXCLUSIONES.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(MASCARA_ARBOLES, "w", driver="GTiff", width=arbol.shape[1], height=arbol.shape[0],
+                       count=1, dtype="uint8", crs="EPSG:3857", transform=transf, compress="deflate",
+                       nbits=1) as dst:
+        dst.write(arbol, 1)
+    log(f"  Máscara lista: {arbol.mean() * 100:.1f} % del área con árboles de {config['altura_arbol_m']} m o más")
+
+
+def cargar_exclusiones():
+    """Zonas que no se cuentan como pasto: polígonos en exclusiones/ (bosques, árboles marcados a mano...)."""
+    lectores = {".geojson": _leer_geojson, ".json": _leer_geojson, ".kml": _leer_kml, ".kmz": _leer_kmz}
+    geoms = []
+    if CARPETA_EXCLUSIONES.exists():
+        for ruta in sorted(CARPETA_EXCLUSIONES.iterdir()):
+            lector = lectores.get(ruta.suffix.lower())
+            if lector:
+                geoms += [z["geom"] if z["geom"].is_valid else z["geom"].buffer(0) for z in lector(ruta)]
+    return geoms
+
+
+def huella_mascara(config):
+    """Identifica la máscara vigente; si cambia, las imágenes se vuelven a procesar."""
+    h = hashlib.sha1(f"{config['altura_arbol_m']}|{config['fraccion_arbol_excluir']}|{config['recorte_borde_m']}".encode())
+    if MASCARA_ARBOLES.exists():
+        h.update(MASCARA_ARBOLES.read_bytes())
+    if CARPETA_EXCLUSIONES.exists():
+        for ruta in sorted(CARPETA_EXCLUSIONES.iterdir()):
+            if ruta.suffix.lower() in (".geojson", ".json", ".kml", ".kmz"):
+                h.update(ruta.name.encode() + ruta.read_bytes())
+    return h.hexdigest()[:10]
+
+
+def mascara_excluida(forma, transf, epsg, exclusiones, config):
+    """True en los píxeles de 10 m que son árbol o bosque (no se cuentan como pasto)."""
+    fuera = np.zeros(forma, dtype=bool)
+    if MASCARA_ARBOLES.exists():
+        fraccion = np.zeros(forma, dtype="float32")
+        with rasterio.open(MASCARA_ARBOLES) as src:
+            reproject(src.read(1).astype("float32"), fraccion, src_transform=src.transform, src_crs=src.crs,
+                      dst_transform=transf, dst_crs=epsg, resampling=ResamplingWarp.average)
+        fuera |= fraccion >= config["fraccion_arbol_excluir"]
+    if exclusiones:
+        t = Transformer.from_crs(4326, epsg, always_xy=True).transform
+        fuera |= geometry_mask([mapping(shp_transform(t, g)) for g in exclusiones],
+                               out_shape=forma, transform=transf, invert=True)
+    return fuera
 
 
 def zona_utm(lon, lat):
@@ -550,7 +635,7 @@ def epsg_de(item, asset):
         return src.crs.to_epsg()
 
 
-def guardar_pixeles(fecha, ndvi, valido, potreros, geoms, transf, epsg, config):
+def guardar_pixeles(fecha, ndvi, valido, excluido, potreros, geoms, transf, epsg, config, huella=""):
     """
     Guarda una imagen PNG de la finca en coordenadas GPS para el mapa de detalle:
     rojo = NDVI (0-250), verde = especie del potrero (1, 2, ...), alfa = píxel útil.
@@ -561,7 +646,8 @@ def guardar_pixeles(fecha, ndvi, valido, potreros, geoms, transf, epsg, config):
         [(mapping(geoms[p["nombre"]]), especies.index(p["especie"]) + 1) for p in potreros],
         out_shape=ndvi.shape, transform=transf, fill=0, dtype="uint8")
     rojo = (np.clip(np.nan_to_num(ndvi, nan=0), 0, 1) * 250).astype("uint8")
-    alfa = np.where(valido & (cod_especie > 0), 255, 0).astype("uint8")
+    alfa = np.where((valido | excluido) & (cod_especie > 0), 255, 0).astype("uint8")
+    cod_especie = np.where(excluido & (cod_especie > 0), COD_ARBOL, cod_especie).astype("uint8")
 
     alto, ancho = ndvi.shape
     izq, abajo = transf * (0, alto)
@@ -580,19 +666,20 @@ def guardar_pixeles(fecha, ndvi, valido, potreros, geoms, transf, epsg, config):
     CARPETA_PIXELES.mkdir(parents=True, exist_ok=True)
     ruta_indice = CARPETA_PIXELES / "indice.json"
     indice = json.loads(ruta_indice.read_text(encoding="utf-8")) if ruta_indice.exists() else {}
-    if fecha in indice and indice[fecha]["utiles"] >= utiles:
-        return  # ya hay una imagen de ese día con más píxeles útiles
+    previa = indice.get(fecha)
+    if previa and previa.get("mascara") == huella and previa["utiles"] >= utiles:
+        return  # ya hay una imagen de ese día, con la misma máscara y más píxeles útiles
     with rasterio.open(CARPETA_PIXELES / f"{fecha}.png", "w", driver="PNG", width=dst_w, height=dst_h,
                        count=4, dtype="uint8") as dst:
         dst.write(np.stack(bandas))
     oeste, norte = dst_t * (0, 0)
     este, sur = dst_t * (dst_w, dst_h)
     indice[fecha] = {"limites": [[round(sur, 7), round(oeste, 7)], [round(norte, 7), round(este, 7)]],
-                     "utiles": utiles}
+                     "utiles": utiles, "mascara": huella}
     ruta_indice.write_text(json.dumps(dict(sorted(indice.items())), indent=1), encoding="utf-8")
 
 
-def procesar_s2(item, potreros, config):
+def procesar_s2(item, potreros, config, exclusiones=(), huella=""):
     epsg = epsg_de(item, "B04")
     geoms = preparar_geoms(potreros, epsg, config["recorte_borde_m"])
     bounds = unary_union(list(geoms.values())).bounds
@@ -640,6 +727,7 @@ def procesar_s2(item, potreros, config):
     with np.errstate(divide="ignore", invalid="ignore"):
         ndvi_img = (n - r) / (n + r)
     validos_img &= np.isfinite(ndvi_img)
+    excluido = mascara_excluida(forma, transf, epsg, exclusiones, config)
 
     filas = []
     for p in potreros:
@@ -647,10 +735,12 @@ def procesar_s2(item, potreros, config):
         if not g.intersects(box(*bounds_reales)):
             continue
         dentro = geometry_mask([mapping(g)], out_shape=forma, transform=transf, invert=True, all_touched=False)
-        total = int(dentro.sum())
+        n_dentro = int(dentro.sum())
+        pasto = dentro & ~excluido  # sin árboles ni bosque
+        total = int(pasto.sum())
         if total < config["min_pixeles"]:
             continue
-        ok = dentro & validos_img
+        ok = pasto & validos_img
         pct = ok.sum() / total
         if pct < config["min_pct_valido"]:
             continue
@@ -665,13 +755,15 @@ def procesar_s2(item, potreros, config):
             "sensor": "S2", "escena": item.id, "pct_valido": _num(pct, 3),
             "ndvi": _num(ndvi), "evi": _num(evi), "ndre": _num(ndre), "msavi": _num(msavi),
             "hist": histograma(ndvi_img[ok]),
+            "pct_arboles": _num(1 - total / n_dentro, 3), "mascara": huella,
         })
     if filas:
-        guardar_pixeles(item.datetime.date().isoformat(), ndvi_img, validos_img, potreros, geoms, transf, epsg, config)
+        guardar_pixeles(item.datetime.date().isoformat(), ndvi_img, validos_img, excluido, potreros, geoms,
+                        transf, epsg, config, huella)
     return filas
 
 
-def procesar_s1(item, potreros, config):
+def procesar_s1(item, potreros, config, exclusiones=(), huella=""):
     epsg = epsg_de(item, "vv")
     geoms = preparar_geoms(potreros, epsg, config["recorte_borde_m"])
     bounds = unary_union(list(geoms.values())).bounds
@@ -682,6 +774,7 @@ def procesar_s1(item, potreros, config):
         return []
     forma = vv.shape
     validos_img = np.isfinite(vv) & np.isfinite(vh) & (vv > 0) & (vh > 0)
+    validos_img &= ~mascara_excluida(forma, transf, epsg, exclusiones, config)
 
     filas = []
     for p in potreros:
@@ -699,7 +792,7 @@ def procesar_s1(item, potreros, config):
         # Se promedia en lineal y luego se pasa a decibeles.
         filas.append({
             "fecha": item.datetime.date().isoformat(), "potrero": p["nombre"], "especie": p["especie"],
-            "sensor": "S1", "escena": item.id, "pct_valido": _num(pct, 3),
+            "sensor": "S1", "escena": item.id, "pct_valido": _num(pct, 3), "mascara": huella,
             "vv_db": _num(10 * np.log10(vv[ok].mean()), 2), "vh_db": _num(10 * np.log10(vh[ok].mean()), 2),
         })
     return filas
@@ -725,7 +818,8 @@ def exportar_web(potreros, filas, config, aforos=(), calibracion=None):
     for p in potreros:
         serie = sorted(por_potrero.get(p["nombre"], []), key=lambda r: r["fecha"])
         s2 = [{"f": r["fecha"], "fv": float(r["kg_fv_m2"]), "ms": float(r["kg_ms_ha"]),
-               "ndvi": float(r["ndvi"]), "v": float(r["pct_valido"]), "pobre": float(r["pct_pobre"])}
+               "ndvi": float(r["ndvi"]), "v": float(r["pct_valido"]), "pobre": float(r["pct_pobre"]),
+               "arb": float(r.get("pct_arboles") or 0)}
               for r in serie if r["sensor"] == "S2" and r.get("hist")]
         s1 = [{"f": r["fecha"], "vv": float(r["vv_db"]), "vh": float(r["vh_db"])}
               for r in serie if r["sensor"] == "S1" and r["vv_db"] != "" and r["vh_db"] != ""]
@@ -751,17 +845,21 @@ def exportar_web(potreros, filas, config, aforos=(), calibracion=None):
             actual, fecha, fuente = mis_aforos[-1]["kg_fv_m2"], mis_aforos[-1]["fecha"], "aforo de campo"
 
         ha = area_ha(p["geom"])
+        frac_arboles = s2[-1]["arb"] if s2 else 0.0
+        ha_pasto = ha * (1 - frac_arboles)
         props = {
             "nombre": p["nombre"], "especie": p["especie"],
             "especie_nombre": config["especies"][p["especie"]]["nombre"],
             "area_ha": round(ha, 2),
+            "area_pasto_ha": round(ha_pasto, 2),
+            "pct_arboles": round(frac_arboles, 3),
             "kg_fv_m2": actual, "ultima_fecha": fecha, "fuente": fuente,
             "kg_fv_m2_satelite": s2[-1]["fv"] if s2 else None,
             "ultima_fecha_satelite": s2[-1]["f"] if s2 else None,
             "kg_ms_ha": s2[-1]["ms"] if s2 else None,
             "ndvi": s2[-1]["ndvi"] if s2 else None,
             "pct_pobre": s2[-1]["pobre"] if s2 else None,
-            "t_fv_potrero": round(actual * ha * 10, 1) if actual is not None else None,
+            "t_fv_potrero": round(actual * ha_pasto * 10, 1) if actual is not None else None,
             "serie_s2": s2, "serie_s1": s1,
             "aforos": [{"f": a["fecha"], "kg": a["kg_fv_m2"], "metodo": a.get("metodo", "")} for a in mis_aforos],
         }
@@ -796,8 +894,16 @@ def main():
     nombres = {p["nombre"] for p in potreros}
     # Se descartan filas de potreros que ya no están en la carpeta.
     historial = [r for r in leer_historial() if r["potrero"] in nombres]
-    # Las filas Sentinel-2 anteriores al cálculo por píxel se vuelven a procesar.
-    historial = [r for r in historial if r["sensor"] != "S2" or r.get("hist")]
+    # Árboles y bosques: se generan una vez y cualquier cambio en la máscara obliga a reprocesar.
+    if not MASCARA_ARBOLES.exists():
+        try:
+            generar_mascara_arboles(potreros, config)
+        except Exception as e:
+            log(f"  ! No se pudo generar la máscara de árboles (se usan solo los polígonos de exclusiones/): {e}")
+    exclusiones = cargar_exclusiones()
+    huella = huella_mascara(config)
+    # Se reprocesan las filas hechas con otra máscara (o antes del cálculo por píxel).
+    historial = [r for r in historial if r.get("mascara") == huella and (r["sensor"] != "S2" or r.get("hist"))]
     hechos = {(r["escena"], r["potrero"]) for r in historial}
 
     hoy = dt.date.today()
@@ -827,7 +933,7 @@ def main():
         if not pendientes:
             continue
         try:
-            filas = procesar_s2(item, pendientes, config)
+            filas = procesar_s2(item, pendientes, config, exclusiones, huella)
         except Exception as e:
             log(f"  ! {item.id}: {e}")
             continue
@@ -844,7 +950,7 @@ def main():
         if not pendientes:
             continue
         try:
-            filas = procesar_s1(item, pendientes, config)
+            filas = procesar_s1(item, pendientes, config, exclusiones, huella)
         except Exception as e:
             log(f"  ! {item.id}: {e}")
             continue

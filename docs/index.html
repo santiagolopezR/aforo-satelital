@@ -72,6 +72,7 @@
 </main>
 <script>
 const ESCALA = [[0, "#b2182b"], [0.5, "#ef8a62"], [1.0, "#fddb6d"], [1.5, "#a6d96a"], [2.5, "#4dac26"], [3.5, "#1b7837"]];
+const COLOR_ARBOL = "#00e676", COD_ARBOL = 255;
 const color = v => v == null ? "#888" : ESCALA.reduce((c, [lim, col]) => v >= lim ? col : c, ESCALA[0][1]);
 const fmt = (v, d = 2) => v == null ? "—" : v.toLocaleString("es-CO", { maximumFractionDigits: d, minimumFractionDigits: d });
 const diasDesde = f => f ? Math.round((Date.now() - new Date(f + "T12:00:00")) / 864e5) : null;
@@ -86,7 +87,8 @@ const leyenda = L.control({ position: "bottomleft" });
 leyenda.onAdd = () => {
   const d = L.DomUtil.create("div", "leyenda");
   d.innerHTML = "<b>kg FV/m²</b><br>" + ESCALA.map(([l, c], i) =>
-    `<span class="punto" style="background:${c}"></span>${l}${ESCALA[i + 1] ? "–" + ESCALA[i + 1][0] : "+"}`).join("<br>");
+    `<span class="punto" style="background:${c}"></span>${l}${ESCALA[i + 1] ? "–" + ESCALA[i + 1][0] : "+"}`).join("<br>")
+    + `<br><span class="punto" style="background:${COLOR_ARBOL}"></span>Árbol / bosque<br><span style="padding-left:16px">(no cuenta)</span>`;
   return d;
 };
 leyenda.addTo(mapa);
@@ -116,8 +118,8 @@ async function pintarPixeles(fecha) {
   const d = cx.getImageData(0, 0, cv.width, cv.height);
   for (let i = 0; i < d.data.length; i += 4) {
     if (!d.data[i + 3]) continue;
-    const fv = fvPixel(d.data[i] / 250, d.data[i + 1]);
-    const [r, g, b] = hexRGB(color(fv));
+    const esArbol = d.data[i + 1] === COD_ARBOL;
+    const [r, g, b] = hexRGB(esArbol ? COLOR_ARBOL : color(fvPixel(d.data[i] / 250, d.data[i + 1])));
     d.data[i] = r; d.data[i + 1] = g; d.data[i + 2] = b; d.data[i + 3] = 235;
   }
   cx.putImageData(d, 0, 0);
@@ -198,7 +200,8 @@ function mostrar(nombre) {
   const det = document.getElementById("detalle");
   det.style.display = "block";
   det.innerHTML = `<h2>${esc(p.nombre)}</h2>
-    <div class="meta">${esc(p.especie_nombre)} · ${fmt(p.area_ha)} ha · ${p.ultima_fecha ? esc(p.fuente) + " del " + p.ultima_fecha : "sin imagen útil todavía"}</div>
+    <div class="meta">${esc(p.especie_nombre)} · ${p.ultima_fecha ? esc(p.fuente) + " del " + p.ultima_fecha : "sin imagen útil todavía"}</div>
+    <div class="meta">${fmt(p.area_ha)} ha${p.pct_arboles >= 0.005 ? ` · <b>${fmt(p.area_pasto_ha)} ha en pasto</b> · <span style="color:${COLOR_ARBOL}">■</span> ${fmt(p.area_ha - p.area_pasto_ha)} ha de árboles (${Math.round(p.pct_arboles * 100)} %)` : ""}</div>
     <div class="fila" style="margin:8px 0"><div><span class="valor">${fmt(p.kg_fv_m2)}</span> <span class="unidad">kg FV/m²</span></div>
     <div><span class="valor">${fmt(p.t_fv_potrero, 1)}</span> <span class="unidad">t FV en el potrero</span></div></div>
     ${p.pct_pobre != null ? `<div class="meta ${p.pct_pobre >= 0.1 ? "pobre" : ""}">Cobertura pobre (menos de ${fmt(datosGlobal.umbral_pobre, 1)} kg FV/m²): <b>${Math.round(p.pct_pobre * 100)} %</b> del potrero · imagen del ${p.ultima_fecha_satelite}</div>` : ""}
