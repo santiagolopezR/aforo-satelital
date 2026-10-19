@@ -1,0 +1,9 @@
+﻿{
+  "type": "FeatureCollection",
+  "features": [
+    { "type": "Feature", "properties": { "nombre": "Ejemplo 1", "especie": "humidicola" },
+      "geometry": { "type": "Polygon", "coordinates": [[[-72.7000,4.0500],[-72.6975,4.0500],[-72.6975,4.0518],[-72.7000,4.0518],[-72.7000,4.0500]]] } },
+    { "type": "Feature", "properties": { "nombre": "Ejemplo 2", "especie": "mombasa" },
+      "geometry": { "type": "Polygon", "coordinates": [[[-72.6960,4.0500],[-72.6935,4.0500],[-72.6935,4.0518],[-72.6960,4.0518],[-72.6960,4.0500]]] } }
+  ]
+}
