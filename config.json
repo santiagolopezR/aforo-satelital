@@ -1,16 +1,19 @@
 {
-  "_nota": "Modelo PROVISIONAL sin calibrar: kg MS/ha = a * e^(b * NDVI), con tope. kg FV/m2 = kg MS/ha / pct_ms / 10000. Cuando haya aforos de campo se ajustan a, b y pct_ms por especie.",
+  "_nota": "Modelo: kg MS/ha = k * (e^(b * (NDVI - ndvi_suelo)) - 1), con tope; suelo desnudo (NDVI <= ndvi_suelo) = 0. kg FV/m2 = kg MS/ha / pct_ms / 10000. Con aforos de campo suficientes, k y pct_ms se recalibran solos por especie.",
   "dias_historial_inicial": 60,
   "recorte_borde_m": 10,
   "max_nubes_escena": 85,
   "min_pct_valido": 0.6,
   "min_pixeles": 4,
-  "ndvi_minimo": 0.15,
+  "ndvi_suelo": 0.25,
+  "dias_efecto_aforo": 30,
+  "dias_par_aforo_imagen": 5,
+  "min_aforos_calibrar": 10,
   "especie_por_defecto": "humidicola",
   "especies": {
-    "humidicola": { "nombre": "Humidícola", "a": 450, "b": 3.4, "max_kg_ms_ha": 6000, "pct_ms": 0.28 },
-    "decumbens":  { "nombre": "Decumbens",  "a": 430, "b": 3.5, "max_kg_ms_ha": 6500, "pct_ms": 0.25 },
-    "mombasa":    { "nombre": "Mombasa",    "a": 500, "b": 3.7, "max_kg_ms_ha": 9000, "pct_ms": 0.22 },
-    "kikuyo":     { "nombre": "Kikuyo",     "a": 400, "b": 3.6, "max_kg_ms_ha": 6000, "pct_ms": 0.18 }
+    "humidicola": { "nombre": "Humidícola", "k": 1343, "b": 3.4, "max_kg_ms_ha": 6000, "pct_ms": 0.28 },
+    "decumbens":  { "nombre": "Decumbens",  "k": 1302, "b": 3.5, "max_kg_ms_ha": 6500, "pct_ms": 0.25 },
+    "mombasa":    { "nombre": "Mombasa",    "k": 1555, "b": 3.7, "max_kg_ms_ha": 9000, "pct_ms": 0.22 },
+    "kikuyo":     { "nombre": "Kikuyo",     "k": 1227, "b": 3.6, "max_kg_ms_ha": 6000, "pct_ms": 0.18 }
   }
 }

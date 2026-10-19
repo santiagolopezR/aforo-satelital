@@ -240,14 +240,234 @@ def guardar_historial(filas):
 
 # ---------------------------------------------------------------- modelo
 
+def forma_curva(ndvi, p, config):
+    """Parte de la curva que depende del NDVI; 0 en suelo desnudo."""
+    return max(0.0, math.exp(p["b"] * (ndvi - config["ndvi_suelo"])) - 1)
+
+
 def estimar(ndvi, especie, config):
-    """Modelo provisional sin calibrar. Devuelve (kg MS/ha, kg FV/m2)."""
+    """Devuelve (kg MS/ha, kg FV/m2) según la curva de la especie."""
     p = config["especies"][especie]
-    if ndvi is None or ndvi < config["ndvi_minimo"]:
+    if ndvi is None:
         return 0.0, 0.0
-    ms = min(p["a"] * math.exp(p["b"] * ndvi), p["max_kg_ms_ha"])
+    ms = min(p["k"] * forma_curva(ndvi, p, config), p["max_kg_ms_ha"])
     fv_m2 = ms / p["pct_ms"] / 10000
     return round(ms), round(fv_m2, 3)
+
+
+# ---------------------------------------------------------------- aforos de campo
+
+COLUMNAS_AFOROS = ["fecha", "potrero", "kg_fv_m2", "pct_ms", "metodo", "observaciones", "origen"]
+AFOROS = RAIZ / "aforos_campo" / "aforos.csv"
+CALIBRACION = RAIZ / "data" / "calibracion.csv"
+ISSUES_A_CERRAR = RAIZ / "data" / ".issues_a_cerrar.json"
+
+
+def _clave(t):
+    return sin_tildes(str(t)).upper().strip()
+
+
+def leer_aforos(potreros):
+    if not AFOROS.exists():
+        return []
+    por_clave = {_clave(p["nombre"]): p["nombre"] for p in potreros}
+    salida = []
+    with AFOROS.open(encoding="utf-8-sig") as f:
+        for r in csv.DictReader(f):
+            try:
+                r["kg_fv_m2"] = float(str(r["kg_fv_m2"]).replace(",", "."))
+                dt.date.fromisoformat(r["fecha"])
+            except (TypeError, ValueError):
+                log(f"  ! Aforo con datos inválidos, se ignora: {r}")
+                continue
+            nombre = por_clave.get(_clave(r["potrero"]))
+            if not nombre:
+                continue  # potrero que ya no existe
+            r["potrero"] = nombre
+            pct = str(r.get("pct_ms") or "").replace(",", ".").strip()
+            r["pct_ms"] = float(pct) / (100 if float(pct) > 1 else 1) if pct else None
+            salida.append(r)
+    return salida
+
+
+def agregar_aforos(nuevos):
+    existe = AFOROS.exists() and AFOROS.stat().st_size > 0
+    AFOROS.parent.mkdir(parents=True, exist_ok=True)
+    with AFOROS.open("a", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=COLUMNAS_AFOROS)
+        if not existe:
+            w.writeheader()
+        for r in nuevos:
+            w.writerow({c: r.get(c, "") for c in COLUMNAS_AFOROS})
+
+
+def _secciones_issue(cuerpo):
+    """Convierte el cuerpo de un formulario de GitHub ('### Título\\n\\nvalor') en {título: valor}."""
+    out = {}
+    for bloque in ("\n" + (cuerpo or "")).split("\n### ")[1:]:
+        titulo, _, valor = bloque.partition("\n")
+        valor = valor.strip()
+        out[_clave(titulo)] = "" if valor == "_No response_" else valor
+    return out
+
+
+def importar_issues(potreros):
+    """Lee los formularios 'Registrar aforo' abiertos en GitHub y los pasa a aforos.csv."""
+    import os
+    import requests
+    token, repo = os.environ.get("GITHUB_TOKEN"), os.environ.get("GITHUB_REPOSITORY")
+    if not token or not repo:
+        return
+    cab = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    r = requests.get(f"https://api.github.com/repos/{repo}/issues", headers=cab,
+                     params={"state": "open", "per_page": 100}, timeout=30)
+    r.raise_for_status()
+    por_clave = {_clave(p["nombre"]): p["nombre"] for p in potreros}
+    nuevos, respuestas = [], []
+    for issue in r.json():
+        if "pull_request" in issue:
+            continue
+        s = _secciones_issue(issue.get("body"))
+        if "FORRAJE VERDE (KG/M²)" not in s:
+            continue  # no es un formulario de aforo
+        errores = []
+        # El repositorio es público: solo el dueño y los colaboradores pueden cargar aforos.
+        if issue.get("author_association") not in ("OWNER", "MEMBER", "COLLABORATOR"):
+            respuestas.append({"numero": issue["number"], "texto": "Solo el dueño del repositorio y sus "
+                               "colaboradores pueden registrar aforos. Este no se tuvo en cuenta."})
+            continue
+        nombre = por_clave.get(_clave(s.get("POTRERO", "")))
+        if not nombre:
+            errores.append(f"no encontré el potrero «{s.get('POTRERO', '')}» (debe escribirse como sale en el mapa)")
+        fecha = s.get("FECHA DEL AFORO") or issue["created_at"][:10]
+        try:
+            dt.date.fromisoformat(fecha)
+        except ValueError:
+            errores.append(f"la fecha «{fecha}» debe ser AAAA-MM-DD")
+        try:
+            kg = float(s.get("FORRAJE VERDE (KG/M²)", "").replace(",", "."))
+            if not 0 <= kg <= 15:
+                errores.append("los kg/m² deben estar entre 0 y 15")
+        except ValueError:
+            errores.append("los kg/m² deben ser un número, por ejemplo 1.8")
+        pct = s.get("MATERIA SECA (%)", "").replace("%", "").replace(",", ".").strip()
+        if pct:
+            try:
+                float(pct)
+            except ValueError:
+                errores.append("la materia seca debe ser un número, por ejemplo 25")
+        if errores:
+            respuestas.append({"numero": issue["number"], "texto": "No se pudo registrar: " + "; ".join(errores)
+                               + ". Crea un aforo nuevo con los datos corregidos."})
+            continue
+        nuevos.append({"fecha": fecha, "potrero": nombre, "kg_fv_m2": kg, "pct_ms": pct,
+                       "metodo": s.get("MÉTODO", s.get("METODO", "")),
+                       "observaciones": " ".join(s.get("OBSERVACIONES", "").split()),
+                       "origen": f"issue #{issue['number']}"})
+        respuestas.append({"numero": issue["number"], "potrero": nombre, "fecha": fecha, "kg": kg})
+    if nuevos:
+        agregar_aforos(nuevos)
+        log(f"Aforos nuevos desde GitHub: {len(nuevos)}")
+    if respuestas:
+        ISSUES_A_CERRAR.parent.mkdir(parents=True, exist_ok=True)
+        ISSUES_A_CERRAR.write_text(json.dumps(respuestas, ensure_ascii=False), encoding="utf-8")
+
+
+def emparejar(aforos, filas, config):
+    """A cada aforo le busca la imagen Sentinel-2 más cercana del mismo potrero."""
+    s2 = {}
+    for r in filas:
+        if r["sensor"] == "S2" and r.get("ndvi") not in ("", None):
+            s2.setdefault(r["potrero"], []).append(r)
+    pares = []
+    for a in aforos:
+        fa = dt.date.fromisoformat(a["fecha"])
+        cands = [(abs((dt.date.fromisoformat(r["fecha"]) - fa).days), r) for r in s2.get(a["potrero"], [])]
+        cands = [c for c in cands if c[0] <= config["dias_par_aforo_imagen"]]
+        if cands:
+            d, r = min(cands, key=lambda c: c[0])
+            pares.append({"aforo": a, "obs": r, "dias": d})
+    return pares
+
+
+def calibrar(pares, especie_de, config):
+    """Con suficientes aforos por especie recalcula k (y pct_ms si hay datos). Devuelve un resumen."""
+    resumen = {}
+    for esp, p in config["especies"].items():
+        mios = [x for x in pares if especie_de[x["aforo"]["potrero"]] == esp]
+        pcts = [x["aforo"]["pct_ms"] for x in mios if x["aforo"]["pct_ms"]]
+        info = {"aforos": len(mios), "calibrada": False}
+        if len(mios) >= config["min_aforos_calibrar"]:
+            if len(pcts) >= 5:
+                p["pct_ms"] = round(sum(pcts) / len(pcts), 3)
+            ys = [x["aforo"]["kg_fv_m2"] * 10000 * (x["aforo"]["pct_ms"] or p["pct_ms"]) for x in mios]
+            fs = [forma_curva(float(x["obs"]["ndvi"]), p, config) for x in mios]
+            den = sum(f * f for f in fs)
+            if den > 0:
+                p["k"] = round(sum(y * f for y, f in zip(ys, fs)) / den, 1)
+                info["calibrada"] = True
+        info.update(k=p["k"], pct_ms=p["pct_ms"])
+        resumen[esp] = info
+    return resumen
+
+
+def guardar_calibracion(pares, config, especie_de):
+    CALIBRACION.parent.mkdir(parents=True, exist_ok=True)
+    with CALIBRACION.open("w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["fecha_aforo", "potrero", "especie", "kg_fv_m2_campo", "fecha_imagen", "ndvi",
+                    "kg_fv_m2_satelite", "error_pct"])
+        for x in sorted(pares, key=lambda x: (x["aforo"]["fecha"], x["aforo"]["potrero"])):
+            a, o = x["aforo"], x["obs"]
+            esp = especie_de[a["potrero"]]
+            sat = estimar(float(o["ndvi"]), esp, config)[1]
+            err = round((sat - a["kg_fv_m2"]) / a["kg_fv_m2"] * 100) if a["kg_fv_m2"] else ""
+            w.writerow([a["fecha"], a["potrero"], esp, a["kg_fv_m2"], o["fecha"], o["ndvi"], sat, err])
+
+
+def ajustar_con_aforos(serie, aforos_potrero, sat_en_aforo, config):
+    """
+    Corrige la serie satelital de un potrero con su último aforo de campo:
+    el día del aforo vale lo medido y la diferencia se va desvaneciendo en 'dias_efecto_aforo'.
+    """
+    dias = config["dias_efecto_aforo"]
+    for s in serie:
+        fs = dt.date.fromisoformat(s["f"])
+        previos = [a for a in aforos_potrero if dt.date.fromisoformat(a["fecha"]) <= fs]
+        s["aj"] = None
+        if not previos:
+            continue
+        a = max(previos, key=lambda a: a["fecha"])
+        d = (fs - dt.date.fromisoformat(a["fecha"])).days
+        base = sat_en_aforo.get(a["fecha"])
+        if d >= dias or base is None:
+            continue
+        s["aj"] = round(max(0.0, s["fv"] + (a["kg_fv_m2"] - base) * (1 - d / dias)), 3)
+    return serie
+
+
+def cerrar_issues():
+    """Responde y cierra en GitHub los formularios de aforo ya procesados (se llama tras guardar)."""
+    import os
+    import requests
+    if not ISSUES_A_CERRAR.exists():
+        return
+    token, repo = os.environ.get("GITHUB_TOKEN"), os.environ.get("GITHUB_REPOSITORY")
+    datos = json.loads(ISSUES_A_CERRAR.read_text(encoding="utf-8"))
+    cab = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    web = json.loads(SALIDA_WEB.read_text(encoding="utf-8")) if SALIDA_WEB.exists() else {"features": []}
+    sat = {f["properties"]["nombre"]: f["properties"] for f in web["features"]}
+    for x in datos:
+        texto = x.get("texto")
+        if not texto:
+            p = sat.get(x["potrero"], {})
+            texto = (f"Registrado: **{x['potrero']}**, {x['fecha']}, **{x['kg']} kg FV/m²**.\n\n"
+                     f"El satélite estimaba {p.get('kg_fv_m2_satelite', '—')} kg FV/m² "
+                     f"(imagen del {p.get('ultima_fecha_satelite') or '—'}). El mapa ya usa el dato de campo.")
+        u = f"https://api.github.com/repos/{repo}/issues/{x['numero']}"
+        requests.post(u + "/comments", headers=cab, json={"body": texto}, timeout=30)
+        requests.patch(u, headers=cab, json={"state": "closed"}, timeout=30)
+    ISSUES_A_CERRAR.unlink()
 
 
 # ---------------------------------------------------------------- satélite
@@ -408,38 +628,65 @@ def buscar(catalogo, coleccion, bbox, desde, hasta, filtro=None):
 
 # ---------------------------------------------------------------- tablero
 
-def exportar_web(potreros, filas, config):
-    por_potrero = {}
+def exportar_web(potreros, filas, config, aforos=(), calibracion=None):
+    por_potrero, aforos_de = {}, {}
     for r in filas:
         por_potrero.setdefault(r["potrero"], []).append(r)
+    for a in aforos:
+        aforos_de.setdefault(a["potrero"], []).append(a)
+    ventana_base = 2 * config["dias_par_aforo_imagen"]
 
     feats = []
     for p in potreros:
         serie = sorted(por_potrero.get(p["nombre"], []), key=lambda r: r["fecha"])
-        s2 = [r for r in serie if r["sensor"] == "S2"]
-        s1 = [r for r in serie if r["sensor"] == "S1"]
-        ultimo = s2[-1] if s2 else None
+        s2 = [{"f": r["fecha"], "fv": float(r["kg_fv_m2"]), "ms": float(r["kg_ms_ha"]),
+               "ndvi": float(r["ndvi"]), "v": float(r["pct_valido"])} for r in serie if r["sensor"] == "S2"]
+        s1 = [{"f": r["fecha"], "vv": float(r["vv_db"]), "vh": float(r["vh_db"])}
+              for r in serie if r["sensor"] == "S1" and r["vv_db"] != "" and r["vh_db"] != ""]
+        mis_aforos = sorted(aforos_de.get(p["nombre"], []), key=lambda a: a["fecha"])
+
+        # Estimación satelital alrededor de cada aforo, para saber cuánto corregir.
+        sat_en_aforo = {}
+        for a in mis_aforos:
+            fa = dt.date.fromisoformat(a["fecha"])
+            cerca = [(abs((dt.date.fromisoformat(s["f"]) - fa).days), s["fv"]) for s in s2]
+            cerca = [c for c in cerca if c[0] <= ventana_base]
+            if cerca:
+                sat_en_aforo[a["fecha"]] = min(cerca)[1]
+        ajustar_con_aforos(s2, mis_aforos, sat_en_aforo, config)
+
+        # Valor actual: lo más reciente entre la imagen (ajustada si aplica) y el aforo de campo.
+        actual, fecha, fuente = None, None, None
+        if s2:
+            u = s2[-1]
+            actual, fecha = (u["aj"], u["f"]) if u["aj"] is not None else (u["fv"], u["f"])
+            fuente = "satélite ajustado con aforo" if u["aj"] is not None else "satélite"
+        if mis_aforos and (fecha is None or mis_aforos[-1]["fecha"] >= fecha):
+            actual, fecha, fuente = mis_aforos[-1]["kg_fv_m2"], mis_aforos[-1]["fecha"], "aforo de campo"
+
         ha = area_ha(p["geom"])
         props = {
             "nombre": p["nombre"], "especie": p["especie"],
             "especie_nombre": config["especies"][p["especie"]]["nombre"],
             "area_ha": round(ha, 2),
-            "ultima_fecha": ultimo["fecha"] if ultimo else None,
-            "kg_fv_m2": float(ultimo["kg_fv_m2"]) if ultimo else None,
-            "kg_ms_ha": float(ultimo["kg_ms_ha"]) if ultimo else None,
-            "ndvi": float(ultimo["ndvi"]) if ultimo else None,
-            "t_fv_potrero": round(float(ultimo["kg_fv_m2"]) * ha * 10, 1) if ultimo else None,
-            "serie_s2": [{"f": r["fecha"], "fv": float(r["kg_fv_m2"]), "ms": float(r["kg_ms_ha"]),
-                          "ndvi": float(r["ndvi"]), "v": float(r["pct_valido"])} for r in s2],
-            "serie_s1": [{"f": r["fecha"], "vv": float(r["vv_db"]), "vh": float(r["vh_db"])}
-                         for r in s1 if r["vv_db"] != "" and r["vh_db"] != ""],
+            "kg_fv_m2": actual, "ultima_fecha": fecha, "fuente": fuente,
+            "kg_fv_m2_satelite": s2[-1]["fv"] if s2 else None,
+            "ultima_fecha_satelite": s2[-1]["f"] if s2 else None,
+            "kg_ms_ha": s2[-1]["ms"] if s2 else None,
+            "ndvi": s2[-1]["ndvi"] if s2 else None,
+            "t_fv_potrero": round(actual * ha * 10, 1) if actual is not None else None,
+            "serie_s2": s2, "serie_s1": s1,
+            "aforos": [{"f": a["fecha"], "kg": a["kg_fv_m2"], "metodo": a.get("metodo", "")} for a in mis_aforos],
         }
         feats.append({"type": "Feature", "properties": props, "geometry": mapping(p["geom"])})
 
+    calibradas = [config["especies"][e]["nombre"] for e, c in (calibracion or {}).items() if c["calibrada"]]
     SALIDA_WEB.parent.mkdir(parents=True, exist_ok=True)
     SALIDA_WEB.write_text(json.dumps({
         "actualizado": dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes"),
-        "modelo": "provisional sin calibrar",
+        "modelo": ("calibrado con aforos: " + ", ".join(calibradas)) if calibradas else "provisional sin calibrar",
+        "calibracion": calibracion or {},
+        "aforos_total": len(aforos),
         "type": "FeatureCollection", "features": feats,
     }, ensure_ascii=False), encoding="utf-8")
 
@@ -517,15 +764,27 @@ def main():
             mejor[k] = r
     filas = list(mejor.values())
 
-    # El modelo se recalcula siempre, así un cambio en config.json se aplica a todo el historial.
+    # Aforos de campo: los formularios nuevos de GitHub pasan a aforos.csv y se recalibra por especie.
     especie_de = {p["nombre"]: p["especie"] for p in potreros}
+    try:
+        importar_issues(potreros)
+    except Exception as e:
+        log(f"  ! No se pudieron leer los aforos de GitHub: {e}")
+    aforos = leer_aforos(potreros)
+    pares = emparejar(aforos, filas, config)
+    calibracion = calibrar(pares, especie_de, config)
+    log(f"Aforos de campo: {len(aforos)} ({len(pares)} con imagen cercana). "
+        + ", ".join(f"{e}: {c['aforos']}{' calibrada' if c['calibrada'] else ''}" for e, c in calibracion.items()))
+
+    # El modelo se recalcula siempre, así un cambio de calibración se aplica a todo el historial.
     for r in filas:
         r["especie"] = especie_de[r["potrero"]]
         if r["sensor"] == "S2" and r.get("ndvi") not in ("", None):
             r["kg_ms_ha"], r["kg_fv_m2"] = estimar(float(r["ndvi"]), r["especie"], config)
 
     guardar_historial(filas)
-    exportar_web(potreros, filas, config)
+    guardar_calibracion(pares, config, especie_de)
+    exportar_web(potreros, filas, config, aforos, calibracion)
     log(f"Listo: {len(nuevas)} observaciones nuevas, {len(filas)} en total.")
 
 
@@ -540,5 +799,8 @@ OPCIONES_GDAL = dict(
 )
 
 if __name__ == "__main__":
-    with rasterio.Env(**OPCIONES_GDAL):
-        sys.exit(main())
+    if "--cerrar-issues" in sys.argv:
+        cerrar_issues()
+    else:
+        with rasterio.Env(**OPCIONES_GDAL):
+            sys.exit(main())

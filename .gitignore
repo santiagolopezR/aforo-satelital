@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 .venv/
+.issues_a_cerrar.json
+data/.issues_a_cerrar.json

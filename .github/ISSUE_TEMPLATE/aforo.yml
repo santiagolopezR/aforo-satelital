@@ -1,0 +1,41 @@
+name: Registrar aforo de campo
+description: Kilos medidos en el potrero. Corrige la estimación satelital de ese potrero y ayuda a calibrar la especie.
+title: "Aforo"
+body:
+  - type: input
+    id: potrero
+    attributes:
+      label: Potrero
+      description: Nombre como sale en el mapa, por ejemplo HOLANDA 2
+    validations:
+      required: true
+  - type: input
+    id: fecha
+    attributes:
+      label: Fecha del aforo
+      description: AAAA-MM-DD, por ejemplo 2026-10-19. Si se deja vacío se toma la fecha de hoy.
+  - type: input
+    id: kg
+    attributes:
+      label: Forraje verde (kg/m²)
+      description: Promedio de los marcos. Escribe 0 si no hay pasto (mecanizado, quemado, inundado).
+    validations:
+      required: true
+  - type: input
+    id: ms
+    attributes:
+      label: Materia seca (%)
+      description: Opcional, si se secó la muestra. Por ejemplo 25
+  - type: dropdown
+    id: metodo
+    attributes:
+      label: Método
+      options:
+        - Corte con marco
+        - Plato medidor
+        - Visual / estimado
+        - Potrero sin pasto (mecanizado, quemado, etc.)
+  - type: textarea
+    id: obs
+    attributes:
+      label: Observaciones

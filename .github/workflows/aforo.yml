@@ -4,14 +4,18 @@ on:
   schedule:
     - cron: "0 13 * * *"   # todos los días, 8:00 a. m. hora Colombia
   workflow_dispatch:         # botón "Run workflow" para correrlo a mano
+  issues:
+    types: [opened]          # formulario "Registrar aforo de campo"
   push:
     paths:                   # cuando se suben o cambian potreros o el modelo
       - "potreros/**"
       - "config.json"
       - "aforo.py"
+      - "aforos_campo/**"
 
 permissions:
   contents: write
+  issues: write
 
 concurrency:
   group: aforo
@@ -32,12 +36,14 @@ jobs:
       - run: pip install -r requirements.txt
 
       - run: python aforo.py
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Guardar resultados
         run: |
           git config user.name "aforo-bot"
           git config user.email "aforo-bot@users.noreply.github.com"
-          git add data docs/datos.json
+          git add data docs/datos.json aforos_campo
           if git diff --cached --quiet; then
             echo "Sin cambios"
           else
@@ -45,3 +51,8 @@ jobs:
             git pull --rebase
             git push
           fi
+
+      - name: Responder formularios de aforo
+        run: python aforo.py --cerrar-issues
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

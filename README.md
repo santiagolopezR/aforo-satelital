@@ -44,17 +44,27 @@ Pestaña **Actions → Aforo satelital → Run workflow**.
    Solo usa la imagen si al menos el 60 % del potrero está despejado.
 4. **Sentinel-1 (radar):** guarda VV y VH. Por ahora no se usa en los kilos; queda listo para calibrar,
    sobre todo para Mombasa, donde el NDVI se satura.
-5. Estima: `kg MS/ha = a · e^(b · NDVI)` (con tope por especie) y `kg FV/m² = kg MS/ha ÷ %MS ÷ 10 000`.
+5. Estima con la curva de abajo (con tope por especie) y `kg FV/m² = kg MS/ha ÷ %MS ÷ 10 000`.
 
-## Calibración (más adelante)
-Anotar cada aforo de campo en `aforos_campo/aforos.csv`:
+## Aforos de campo (corrigen el satélite)
+**Desde el celular:** en el mapa, toca el potrero → **Registrar aforo de este potrero**.
+Se abre un formulario de GitHub con el nombre y la fecha ya puestos; solo se escriben los kg FV/m²
+(0 si el potrero está sin pasto) y se envía. En 1–2 minutos el mapa se actualiza y el formulario
+se cierra con un comentario que compara el dato de campo con lo que decía el satélite.
 
-```
-fecha,potrero,kg_fv_m2,pct_ms,observaciones
-2026-11-02,Potrero 1,1.85,0.27,5 marcos de 0.25 m2
-```
+Solo cuentan los aforos del dueño del repositorio y de sus colaboradores
+(Settings → Collaborators para agregar al mayordomo u otra persona con cuenta de GitHub).
 
-Con 30 o más aforos por especie se ajustan `a`, `b` y `pct_ms` en `config.json`.
+También se pueden escribir directamente en `aforos_campo/aforos.csv`.
+
+**Qué hace cada aforo:**
+1. **Corrige ese potrero de inmediato.** El día del aforo el mapa muestra lo medido; en las imágenes
+   siguientes la diferencia con el satélite se va desvaneciendo en 30 días (`dias_efecto_aforo`).
+2. **Calibra la especie.** Cuando una especie junta 10 aforos con imagen despejada a ±5 días,
+   el modelo de esa especie se recalcula solo (y el % de materia seca, si se anotó en 5 o más).
+   La comparación aforo vs. satélite queda en `data/calibracion.csv`.
+
+**Modelo:** `kg MS/ha = k · (e^(b · (NDVI − 0,25)) − 1)`; con NDVI de suelo desnudo (≤ 0,25) da 0.
 
 ## Limitaciones
 - El píxel es de 10 m: potreros de menos de ~0,3 ha dan datos pobres.

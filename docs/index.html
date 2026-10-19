@@ -42,6 +42,9 @@
   table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
   td, th { padding: 3px 4px; border-bottom: 1px solid var(--borde); text-align: right; }
   td:first-child, th:first-child { text-align: left; }
+  .boton { display: block; text-align: center; margin: 10px 0 4px; padding: 10px; border-radius: 8px; background: var(--acento); color: var(--panel); font-weight: 600; text-decoration: none; }
+  .aforo-txt { color: #2b6cb0; }
+  @media (prefers-color-scheme: dark) { .aforo-txt { color: #7fb3f0; } }
   @media (max-width: 800px) {
     main { grid-template-columns: 1fr; }
     #mapa { height: 55vh; }
@@ -54,7 +57,7 @@
   <h1>Aforo satelital de potreros</h1>
   <div class="sub" id="actualizado">Cargando…</div>
 </header>
-<div class="aviso">Modelo provisional <b>sin calibrar</b> (Sentinel-2, NDVI). Los kilos son orientativos hasta cargar aforos de campo.</div>
+<div class="aviso" id="aviso">Modelo provisional <b>sin calibrar</b> (Sentinel-2, NDVI). Los kilos son orientativos hasta cargar aforos de campo.</div>
 <main>
   <div id="mapa"></div>
   <div id="lado">
@@ -84,21 +87,36 @@ leyenda.onAdd = () => {
 leyenda.addTo(mapa);
 
 let capas = {}, activo = null;
+const REPO = location.hostname.endsWith("github.io")
+  ? `https://github.com/${location.hostname.split(".")[0]}/${location.pathname.split("/")[1]}`
+  : "https://github.com/santiagolopezR/aforo-satelital";
+const hoyISO = () => new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+const enlaceAforo = nombre => `${REPO}/issues/new?template=aforo.yml&title=${encodeURIComponent("Aforo " + nombre)}`
+  + `&potrero=${encodeURIComponent(nombre)}&fecha=${hoyISO()}`;
+const AZUL = "#2b6cb0";
 
-function grafica(serie) {
-  if (serie.length < 2) return '<div class="meta">Aún no hay suficientes fechas para graficar.</div>';
+function grafica(serie, aforos) {
+  const fechas = [...serie.map(s => s.f), ...aforos.map(a => a.f)].sort();
+  if (fechas.length < 2) return '<div class="meta">Aún no hay suficientes fechas para graficar.</div>';
   const W = 350, H = 150, m = { l: 30, r: 8, t: 8, b: 22 };
-  const t0 = new Date(serie[0].f), t1 = new Date(serie[serie.length - 1].f);
-  const maxV = Math.max(1, ...serie.map(s => s.fv)) * 1.1;
+  const t0 = new Date(fechas[0]), t1 = new Date(fechas[fechas.length - 1]);
+  const val = s => s.aj ?? s.fv;
+  const maxV = Math.max(1, ...serie.map(s => Math.max(s.fv, val(s))), ...aforos.map(a => a.kg)) * 1.1;
   const x = f => m.l + (new Date(f) - t0) / Math.max(1, t1 - t0) * (W - m.l - m.r);
   const y = v => H - m.b - v / maxV * (H - m.t - m.b);
-  const pts = serie.map(s => `${x(s.f).toFixed(1)},${y(s.fv).toFixed(1)}`).join(" ");
+  const linea = (fn, extra) => serie.length > 1
+    ? `<polyline points="${serie.map(s => `${x(s.f).toFixed(1)},${y(fn(s)).toFixed(1)}`).join(" ")}" fill="none" ${extra}/>` : "";
+  const hayAjuste = serie.some(s => s.aj != null);
   const marcas = [0, maxV / 2, maxV].map(v =>
     `<line x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}" stroke="currentColor" opacity=".12"/><text x="${m.l - 4}" y="${y(v) + 3}" text-anchor="end">${v.toFixed(1)}</text>`).join("");
-  const puntos = serie.map(s => `<circle cx="${x(s.f)}" cy="${y(s.fv)}" r="3" fill="${color(s.fv)}"><title>${s.f}: ${fmt(s.fv)} kg FV/m²</title></circle>`).join("");
+  const puntos = serie.map(s => `<circle cx="${x(s.f)}" cy="${y(val(s))}" r="3" fill="${color(val(s))}"><title>${s.f}: ${fmt(val(s))} kg FV/m²${s.aj != null ? " (satélite " + fmt(s.fv) + ")" : ""}</title></circle>`).join("");
+  const rombos = aforos.map(a => { const cx = x(a.f), cy = y(a.kg);
+    return `<path d="M${cx} ${cy - 5}L${cx + 5} ${cy}L${cx} ${cy + 5}L${cx - 5} ${cy}Z" fill="${AZUL}"><title>Aforo ${a.f}: ${fmt(a.kg)} kg FV/m²</title></path>`; }).join("");
   return `<svg viewBox="0 0 ${W} ${H}" width="100%">${marcas}
-    <polyline points="${pts}" fill="none" stroke="var(--acento)" stroke-width="2"/>${puntos}
-    <text x="${m.l}" y="${H - 6}">${serie[0].f}</text><text x="${W - m.r}" y="${H - 6}" text-anchor="end">${serie[serie.length - 1].f}</text></svg>`;
+    ${hayAjuste ? linea(s => s.fv, 'stroke="currentColor" opacity=".35" stroke-width="1.5" stroke-dasharray="4 3"') : ""}
+    ${linea(val, 'stroke="var(--acento)" stroke-width="2"')}${puntos}${rombos}
+    <text x="${m.l}" y="${H - 6}">${fechas[0]}</text><text x="${W - m.r}" y="${H - 6}" text-anchor="end">${fechas[fechas.length - 1]}</text></svg>
+    <div class="meta"><span style="color:var(--acento)">●</span> satélite${hayAjuste ? " (ajustado; punteado = sin ajustar)" : ""} · <span class="aforo-txt">◆ aforo de campo</span></div>`;
 }
 
 function mostrar(nombre) {
@@ -107,22 +125,28 @@ function mostrar(nombre) {
   const { feature, capa } = capas[nombre];
   const p = feature.properties;
   mapa.fitBounds(capa.getBounds(), { maxZoom: 17, padding: [30, 30] });
-  const filas = p.serie_s2.slice(-12).reverse().map(s =>
-    `<tr><td>${s.f}</td><td>${fmt(s.fv)}</td><td>${fmt(s.ms, 0)}</td><td>${fmt(s.ndvi)}</td><td>${Math.round(s.v * 100)}%</td></tr>`).join("");
+  const filas = [
+    ...p.serie_s2.map(s => ({ f: s.f, html: `<td>${s.f}</td><td>${fmt(s.aj ?? s.fv)}${s.aj != null ? "*" : ""}</td><td>${fmt(s.ndvi)}</td><td>${Math.round(s.v * 100)}%</td>` })),
+    ...p.aforos.map(a => ({ f: a.f, html: `<td class="aforo-txt">${a.f} ◆</td><td class="aforo-txt">${fmt(a.kg)}</td><td colspan="2" class="aforo-txt" style="text-align:left">aforo · ${esc(a.metodo || "")}</td>` })),
+  ].sort((a, b) => b.f.localeCompare(a.f)).slice(0, 14).map(r => `<tr>${r.html}</tr>`).join("");
   const det = document.getElementById("detalle");
   det.style.display = "block";
   det.innerHTML = `<h2>${esc(p.nombre)}</h2>
-    <div class="meta">${esc(p.especie_nombre)} · ${fmt(p.area_ha)} ha · ${p.ultima_fecha ? "imagen del " + p.ultima_fecha : "sin imagen útil todavía"}</div>
+    <div class="meta">${esc(p.especie_nombre)} · ${fmt(p.area_ha)} ha · ${p.ultima_fecha ? esc(p.fuente) + " del " + p.ultima_fecha : "sin imagen útil todavía"}</div>
     <div class="fila" style="margin:8px 0"><div><span class="valor">${fmt(p.kg_fv_m2)}</span> <span class="unidad">kg FV/m²</span></div>
     <div><span class="valor">${fmt(p.t_fv_potrero, 1)}</span> <span class="unidad">t FV en el potrero</span></div></div>
-    ${grafica(p.serie_s2)}
-    <table><tr><th>Fecha</th><th>kg FV/m²</th><th>kg MS/ha</th><th>NDVI</th><th>Despejado</th></tr>${filas}</table>`;
+    ${grafica(p.serie_s2, p.aforos)}
+    <a class="boton" href="${enlaceAforo(p.nombre)}" target="_blank" rel="noopener">Registrar aforo de este potrero</a>
+    <table><tr><th>Fecha</th><th>kg FV/m²</th><th>NDVI</th><th>Despejado</th></tr>${filas}</table>
+    ${p.serie_s2.some(s => s.aj != null) ? '<div class="meta">* corregido con el último aforo de campo</div>' : ""}`;
 }
 
 fetch("datos.json", { cache: "no-store" }).then(r => r.json()).then(datos => {
   const act = new Date(datos.actualizado);
   document.getElementById("actualizado").textContent =
-    `Actualizado ${act.toLocaleString("es-CO", { dateStyle: "medium", timeStyle: "short" })} · ${datos.features.length} potreros`;
+    `Actualizado ${act.toLocaleString("es-CO", { dateStyle: "medium", timeStyle: "short" })} · ${datos.features.length} potreros · ${datos.aforos_total || 0} aforos de campo`;
+  if (datos.modelo && datos.modelo.startsWith("calibrado"))
+    document.getElementById("aviso").innerHTML = `Modelo <b>${esc(datos.modelo)}</b>. Las demás especies siguen sin calibrar.`;
   if (!datos.features.length) {
     document.getElementById("lista").innerHTML = '<div class="tarjeta">No hay potreros. Sube un archivo .kml, .kmz o .geojson a la carpeta <b>potreros/</b>.</div>';
     mapa.setView([4.6, -74.1], 6);
@@ -142,7 +166,8 @@ fetch("datos.json", { cache: "no-store" }).then(r => r.json()).then(datos => {
   const orden = [...datos.features].sort((a, b) => (b.properties.kg_fv_m2 ?? -1) - (a.properties.kg_fv_m2 ?? -1));
   document.getElementById("lista").innerHTML = orden.map(({ properties: p }) => {
     const d = diasDesde(p.ultima_fecha);
-    const edad = d == null ? "sin imagen útil" : d === 0 ? "imagen de hoy" : `imagen de hace ${d} día${d === 1 ? "" : "s"}`;
+    const que = p.fuente === "aforo de campo" ? "aforo" : "imagen";
+    const edad = d == null ? "sin imagen útil" : d === 0 ? `${que} de hoy` : `${que} de hace ${d} día${d === 1 ? "" : "s"}`;
     return `<div class="tarjeta" data-n="${esc(p.nombre)}">
       <div class="fila"><span class="nombre"><span class="punto" style="background:${color(p.kg_fv_m2)}"></span>${esc(p.nombre)}</span>
       <span class="valor">${fmt(p.kg_fv_m2)} <span class="unidad">kg FV/m²</span></span></div>
