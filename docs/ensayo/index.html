@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ensayo de pastoreo</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --surface-1: #fcfcfb; --surface-2: #f3f2ee; --borde: #e2e0da;
+    --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #77756f;
+    --grid: #e9e7e1; --banda: rgba(120, 118, 110, .14);
+    --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --surface-1: #1a1a19; --surface-2: #232321; --borde: #34332f;
+      --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #96958c;
+      --grid: #2c2b28; --banda: rgba(200, 198, 188, .12);
+      --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --surface-1: #1a1a19; --surface-2: #232321; --borde: #34332f;
+    --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #96958c;
+    --grid: #2c2b28; --banda: rgba(200, 198, 188, .12);
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  .viz-root { min-height: 100vh; background: var(--surface-1); color: var(--text-primary);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; padding: 16px; }
+  .ancho { max-width: 980px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 2px; }
+  .sub { color: var(--text-secondary); font-size: 13px; }
+  .filtros { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 14px 0 10px; }
+  select { font: inherit; background: var(--surface-2); color: var(--text-primary); border: 1px solid var(--borde); border-radius: 6px; padding: 4px 8px; }
+  .resumen { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0 14px; }
+  .tile { background: var(--surface-2); border-radius: 10px; padding: 8px 14px; min-width: 140px; }
+  .tile .n { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .tile .l { font-size: 12px; color: var(--text-secondary); }
+  .leyenda { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--text-secondary); margin: 4px 0; }
+  .leyenda svg { vertical-align: middle; margin-right: 4px; }
+  .panel-titulo { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin: 10px 0 0; }
+  svg text { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  #tip { position: fixed; pointer-events: none; background: var(--surface-2); border: 1px solid var(--borde);
+    border-radius: 8px; padding: 6px 9px; font-size: 12px; display: none; z-index: 5; box-shadow: 0 2px 10px rgba(0,0,0,.15); }
+  table { border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; width: 100%; }
+  th, td { text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--borde); }
+  th:first-child, td:first-child { text-align: left; }
+  details { margin-top: 14px; }
+  .nota { font-size: 12px; color: var(--text-muted); margin-top: 10px; }
+  a { color: var(--series-1); }
+</style>
+</head>
+<body>
+<div class="viz-root"><div class="ancho">
+  <h1>Ensayo de pastoreo por satélite</h1>
+  <div class="sub" id="sub">Cargando…</div>
+  <div class="filtros">
+    <label>Rotación <select id="selRot"></select></label>
+    <label>Potrero <select id="selPot"></select></label>
+    <a href="../">← volver al mapa</a>
+  </div>
+  <div class="resumen" id="resumen"></div>
+  <div class="leyenda">
+    <span><svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2"/></svg>Sentinel-2 (10 m)</span>
+    <span><svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="var(--series-2)" stroke="var(--surface-1)" stroke-width="2"/></svg>Landsat (30 m)</span>
+    <span><svg width="14" height="14"><path d="M7 1L13 7L7 13L1 7Z" fill="var(--series-3)"/></svg>Aforo de campo</span>
+    <span><svg width="14" height="14"><rect x="1" y="1" width="12" height="12" fill="var(--banda)"/></svg>Pastoreo detectado</span>
+  </div>
+  <div class="panel-titulo">Forraje verde estimado (kg FV/m²)</div>
+  <svg id="gKg" width="100%"></svg>
+  <div class="panel-titulo">NDVI</div>
+  <svg id="gNdvi" width="100%"></svg>
+  <div class="panel-titulo">Radar Sentinel-1, VH (dB) · ve a través de las nubes</div>
+  <svg id="gVh" width="100%"></svg>
+  <div id="pastoreos"></div>
+  <details><summary>Tabla de datos</summary><div id="tabla"></div></details>
+  <div class="nota">Puntos claros = imagen con menos del 80 % del potrero despejado (no se usan para detectar pastoreos).
+    Kilos con el modelo provisional sin calibrar. Landsat usa la misma curva que Sentinel-2.</div>
+</div></div>
+<div id="tip"></div>
+<script>
+const fmt = (v, d = 2) => v == null || isNaN(v) ? "—" : v.toLocaleString("es-CO", { minimumFractionDigits: d, maximumFractionDigits: d });
+const esc = t => String(t).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const T = f => new Date(f + "T12:00:00").getTime();
+const MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+const fCorta = f => { const d = new Date(f + "T12:00:00"); return `${d.getDate()} ${MESES[d.getMonth()]}`; };
+let datos = null, pot = null;
+
+function panel(svg, cfg) {
+  const W = svg.clientWidth || 900, H = cfg.alto, m = { l: 44, r: 12, t: 8, b: 22 };
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.setAttribute("height", H);
+  const t0 = T(datos.desde), t1 = T(datos.hasta);
+  const x = f => m.l + (T(f) - t0) / (t1 - t0) * (W - m.l - m.r);
+  const y = v => H - m.b - (v - cfg.min) / (cfg.max - cfg.min) * (H - m.t - m.b);
+  let s = "";
+  for (const e of pot.pastoreos) {
+    const a = x(e.desde), b = x(e.hasta);
+    s += `<rect x="${a}" y="${m.t}" width="${Math.max(2, b - a)}" height="${H - m.t - m.b}" fill="var(--banda)"/>`;
+  }
+  for (const v of cfg.ticks) s += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)"/>
+    <text x="${m.l - 6}" y="${y(v) + 4}" text-anchor="end">${fmt(v, cfg.dec)}</text>`;
+  // Marcas de mes en el eje x
+  const d = new Date(datos.desde + "T12:00:00"); d.setDate(1); d.setMonth(d.getMonth() + 1);
+  for (; d.getTime() <= t1; d.setMonth(d.getMonth() + 1)) {
+    const f = d.toISOString().slice(0, 10);
+    s += `<text x="${x(f)}" y="${H - 6}" text-anchor="middle">${MESES[d.getMonth()]}</text>`;
+  }
+  s += cfg.dibujar(x, y);
+  s += `<line class="cruz" x1="0" x2="0" y1="${m.t}" y2="${H - m.b}" stroke="var(--text-muted)" stroke-dasharray="3 3" visibility="hidden"/>`;
+  svg.innerHTML = s;
+  svg._x = x; svg._m = m; svg._W = W;
+}
+
+const linea = (pts, x, y, color) => pts.length > 1
+  ? `<polyline points="${pts.map(p => `${x(p.f).toFixed(1)},${y(p.v).toFixed(1)}`).join(" ")}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" opacity=".55"/>` : "";
+const punto = (cx, cy, color, claro) =>
+  `<circle cx="${cx}" cy="${cy}" r="4.5" fill="${color}" fill-opacity="${claro ? .35 : 1}" stroke="var(--surface-1)" stroke-width="2"/>`;
+const colorSensor = s => s === "S2" ? "var(--series-1)" : "var(--series-2)";
+
+function dibujar() {
+  const opt = pot.optico, limp = opt.filter(o => o.v >= 0.8);
+  const maxKg = Math.max(2.5, ...opt.map(o => o.kg), ...pot.aforos.map(a => a.kg));
+  panel(document.getElementById("gKg"), {
+    alto: 220, min: 0, max: Math.ceil(maxKg * 2) / 2, dec: 1,
+    ticks: [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5].filter(v => v <= Math.ceil(maxKg * 2) / 2),
+    dibujar: (x, y) => linea(limp.map(o => ({ f: o.f, v: o.kg })), x, y, "var(--text-secondary)")
+      + opt.map(o => punto(x(o.f), y(o.kg), colorSensor(o.s), o.v < 0.8)).join("")
+      + pot.aforos.map(a => { const cx = x(a.f), cy = y(a.kg);
+          return `<path d="M${cx} ${cy - 7}L${cx + 7} ${cy}L${cx} ${cy + 7}L${cx - 7} ${cy}Z" fill="var(--series-3)" stroke="var(--surface-1)" stroke-width="2"/>`; }).join(""),
+  });
+  panel(document.getElementById("gNdvi"), {
+    alto: 150, min: 0, max: 1, dec: 1, ticks: [0, 0.25, 0.5, 0.75, 1],
+    dibujar: (x, y) => linea(limp.map(o => ({ f: o.f, v: o.ndvi })), x, y, "var(--text-secondary)")
+      + opt.map(o => punto(x(o.f), y(o.ndvi), colorSensor(o.s), o.v < 0.8)).join(""),
+  });
+  const vh = pot.radar.map(r => r.vh), lo = Math.floor(Math.min(-20, ...vh)), hi = Math.ceil(Math.max(-8, ...vh));
+  panel(document.getElementById("gVh"), {
+    alto: 130, min: lo, max: hi, dec: 0,
+    ticks: Array.from({ length: hi - lo + 1 }, (_, i) => lo + i).filter(v => v % 2 === 0),
+    dibujar: (x, y) => linea(pot.radar.map(r => ({ f: r.f, v: r.vh })), x, y, "var(--text-secondary)")
+      + pot.radar.map(r => `<circle cx="${x(r.f)}" cy="${y(r.vh)}" r="3.5" fill="var(--text-secondary)" stroke="var(--surface-1)" stroke-width="1.5"/>`).join(""),
+  });
+
+  // Resumen y pastoreos
+  const ciclos = pot.pastoreos.filter(e => e.dias_desde_anterior).map(e => e.dias_desde_anterior);
+  const med = a => { const s = [...a].sort((p, q) => p - q); return s.length ? s[Math.floor((s.length - 1) / 2)] : null; };
+  document.getElementById("resumen").innerHTML = [
+    [opt.length, "imágenes ópticas útiles"],
+    [opt.filter(o => o.s === "S2").length + " / " + opt.filter(o => o.s === "L").length, "Sentinel-2 / Landsat"],
+    [pot.radar.length, "pasadas de radar"],
+    [pot.pastoreos.length, "pastoreos detectados"],
+    [ciclos.length ? med(ciclos) + " días" : "—", "ciclo en este potrero"],
+    [datos.ciclo_mediana ? datos.ciclo_mediana + " días" : "—", `ciclo mediano rotación (${datos.ciclos.length} intervalos)`],
+  ].map(([n, l]) => `<div class="tile"><div class="n">${n}</div><div class="l">${l}</div></div>`).join("");
+  document.getElementById("pastoreos").innerHTML = pot.pastoreos.length
+    ? `<div class="panel-titulo" style="margin-top:14px">Pastoreos detectados</div><table><tr><th>Entre</th><th>Antes</th><th>Después</th><th>Días desde el anterior</th></tr>
+      ${pot.pastoreos.map(e => `<tr><td>${fCorta(e.desde)} y ${fCorta(e.hasta)}</td><td>${fmt(e.antes)} kg</td><td>${fmt(e.despues)} kg</td><td>${e.dias_desde_anterior ?? "—"}</td></tr>`).join("")}</table>`
+    : `<p class="sub" style="margin-top:14px">No se detectaron bajones fuertes (≥ 0,35 kg) entre imágenes despejadas seguidas.</p>`;
+  document.getElementById("tabla").innerHTML = `<table><tr><th>Fecha</th><th>Sensor</th><th>kg FV/m²</th><th>NDVI</th><th>Despejado</th></tr>
+    ${opt.map(o => `<tr><td>${o.f}</td><td>${o.s === "S2" ? "Sentinel-2" : "Landsat"}</td><td>${fmt(o.kg)}</td><td>${fmt(o.ndvi)}</td><td>${Math.round(o.v * 100)} %</td></tr>`).join("")}</table>`;
+}
+
+// Cruz y tooltip compartidos por los tres paneles
+function hover(ev) {
+  const svg = ev.currentTarget, r = svg.getBoundingClientRect(), W = svg._W;
+  const px = (ev.clientX - r.left) * W / r.width;
+  const todas = [...pot.optico.map(o => o.f), ...pot.radar.map(o => o.f), ...pot.aforos.map(a => a.f)];
+  if (!todas.length) return;
+  const f = todas.reduce((b, c) => Math.abs(svg._x(c) - px) < Math.abs(svg._x(b) - px) ? c : b);
+  for (const id of ["gKg", "gNdvi", "gVh"]) {
+    const s = document.getElementById(id), c = s.querySelector(".cruz");
+    c.setAttribute("x1", s._x(f)); c.setAttribute("x2", s._x(f)); c.setAttribute("visibility", "visible");
+  }
+  const o = pot.optico.filter(z => z.f === f), rd = pot.radar.find(z => z.f === f), af = pot.aforos.find(z => z.f === f);
+  const tip = document.getElementById("tip");
+  tip.innerHTML = `<b>${fCorta(f)}</b>` + o.map(z => `<br>${z.s === "S2" ? "Sentinel-2" : "Landsat"}: ${fmt(z.kg)} kg · NDVI ${fmt(z.ndvi)} · ${Math.round(z.v * 100)} % despejado`).join("")
+    + (af ? `<br>Aforo de campo: ${fmt(af.kg)} kg` : "") + (rd ? `<br>Radar VH: ${fmt(rd.vh, 1)} dB` : "");
+  tip.style.display = "block";
+  tip.style.left = Math.min(ev.clientX + 14, innerWidth - tip.offsetWidth - 8) + "px";
+  tip.style.top = (ev.clientY + 14) + "px";
+}
+function salir() {
+  document.getElementById("tip").style.display = "none";
+  document.querySelectorAll(".cruz").forEach(c => c.setAttribute("visibility", "hidden"));
+}
+for (const id of ["gKg", "gNdvi", "gVh"]) {
+  const s = document.getElementById(id);
+  s.addEventListener("pointermove", hover); s.addEventListener("pointerleave", salir);
+}
+
+async function cargarRotacion(clave) {
+  datos = await fetch(`${clave}.json`, { cache: "no-store" }).then(r => r.json());
+  document.getElementById("sub").textContent = `${datos.rotacion} · del ${datos.desde} al ${datos.hasta} · generado ${datos.generado.slice(0, 16).replace("T", " ")} UTC`;
+  const sel = document.getElementById("selPot");
+  // Primero los potreros con más pastoreos vistos (los que mejor muestran el ciclo).
+  const orden = [...datos.potreros].sort((a, b) => b.pastoreos.length - a.pastoreos.length || b.optico.length - a.optico.length);
+  sel.innerHTML = orden.map(p => `<option>${esc(p.nombre)}</option>`).join("");
+  const pedido = new URLSearchParams(location.search).get("potrero");
+  sel.value = datos.potreros.some(p => p.nombre === pedido) ? pedido : orden[0].nombre;
+  elegir();
+}
+function elegir() {
+  pot = datos.potreros.find(p => p.nombre === document.getElementById("selPot").value);
+  dibujar();
+}
+document.getElementById("selPot").addEventListener("change", elegir);
+document.getElementById("selRot").addEventListener("change", e => cargarRotacion(e.target.value));
+addEventListener("resize", () => pot && dibujar());
+
+fetch("indice.json", { cache: "no-store" }).then(r => r.json()).then(ind => {
+  const sel = document.getElementById("selRot");
+  sel.innerHTML = Object.entries(ind).map(([k, v]) => `<option value="${k}">${esc(v.rotacion)} (${v.dias} días)</option>`).join("");
+  cargarRotacion(sel.value);
+}).catch(() => { document.getElementById("sub").textContent = "Todavía no hay ensayos generados."; });
+</script>
+</body>
+</html>

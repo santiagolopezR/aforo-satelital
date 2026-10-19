@@ -1,0 +1,49 @@
+name: Ensayo de pastoreo
+
+on:
+  workflow_dispatch:         # Actions → Ensayo de pastoreo → Run workflow
+    inputs:
+      rotacion:
+        description: "Rotación (como sale en el mapa, p. ej. LA HOLANDA)"
+        default: "LA HOLANDA"
+      dias:
+        description: "Días hacia atrás"
+        default: "150"
+  push:
+    paths:
+      - "ensayo.py"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: aforo
+  cancel-in-progress: false
+
+jobs:
+  ensayo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python ensayo.py "$ROTACION" "$DIAS"
+        env:
+          ROTACION: ${{ github.event.inputs.rotacion || 'LA HOLANDA' }}
+          DIAS: ${{ github.event.inputs.dias || '150' }}
+      - name: Guardar resultados
+        run: |
+          git config user.name "aforo-bot"
+          git config user.email "aforo-bot@users.noreply.github.com"
+          git add docs/ensayo
+          if git diff --cached --quiet; then
+            echo "Sin cambios"
+          else
+            git commit -m "Ensayo de pastoreo $(date -u +%Y-%m-%d)"
+            git pull --rebase --autostash
+            git push
+          fi
