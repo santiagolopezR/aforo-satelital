@@ -12,6 +12,7 @@ on:
   push:
     paths:
       - "ensayo.py"
+      - ".github/workflows/ensayo.yml"
 
 permissions:
   contents: write
@@ -40,10 +41,11 @@ jobs:
           git config user.name "aforo-bot"
           git config user.email "aforo-bot@users.noreply.github.com"
           git add docs/ensayo
-          if git diff --cached --quiet; then
-            echo "Sin cambios"
-          else
-            git commit -m "Ensayo de pastoreo $(date -u +%Y-%m-%d)"
-            git pull --rebase --autostash
-            git push
-          fi
+          if git diff --cached --quiet; then echo "Sin cambios"; exit 0; fi
+          git commit -m "Ensayo de pastoreo $(date -u +%Y-%m-%d)"
+          for intento in 1 2 3; do
+            git fetch origin main && git rebase origin/main && git push origin HEAD:main && exit 0
+            git rebase --abort 2>/dev/null || true
+            sleep 10
+          done
+          exit 1
