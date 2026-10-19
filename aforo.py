@@ -12,6 +12,7 @@ Salidas:
 """
 import csv
 import datetime as dt
+import re
 import json
 import math
 import sys
@@ -121,6 +122,7 @@ def _leer_geojson(ruta):
         yield {
             "nombre": _prop(props, "nombre", "name", "potrero", "lote") or f"{ruta.stem}_{i + 1}",
             "especie": _prop(props, "especie", "pasto", "forraje"),
+            "rotacion": _prop(props, "rotacion"),
             "geom": shape(f["geometry"]),
         }
 
@@ -222,6 +224,8 @@ def cargar_potreros(config):
                 p["nombre"] = nombre
                 p["especie"] = normalizar_especie(p["especie"] or mapa_especie.get(base.lower()), config)
                 p["archivo"] = ruta.name
+                # Rotación: la del archivo o el nombre sin el número (HOLANDA 9 -> HOLANDA).
+                p["rotacion"] = (p.get("rotacion") or re.sub(r"\s*[\d.]+.*$", "", nombre) or nombre).upper()
                 potreros.append(p)
         except Exception as e:  # un archivo dañado no debe frenar a los demás
             log(f"  ! No se pudo leer {ruta.name}: {e}")
@@ -493,18 +497,24 @@ def importar_issues(potreros):
                      params={"state": "open", "per_page": 100}, timeout=30)
     r.raise_for_status()
     por_clave = {_clave(p["nombre"]): p["nombre"] for p in potreros}
-    nuevos, respuestas = [], []
+    nuevos, respuestas, nuevos_pastoreo = [], [], []
     for issue in r.json():
         if "pull_request" in issue:
             continue
         s = _secciones_issue(issue.get("body"))
-        if "FORRAJE VERDE (KG/M²)" not in s:
-            continue  # no es un formulario de aforo
+        if "FORRAJE VERDE (KG/M²)" not in s and "MOVIMIENTO" not in s:
+            continue  # no es un formulario de aforo ni de pastoreo
         errores = []
-        # El repositorio es público: solo el dueño y los colaboradores pueden cargar aforos.
+        # El repositorio es público: solo el dueño y los colaboradores pueden registrar datos.
         if issue.get("author_association") not in ("OWNER", "MEMBER", "COLLABORATOR"):
             respuestas.append({"numero": issue["number"], "texto": "Solo el dueño del repositorio y sus "
-                               "colaboradores pueden registrar aforos. Este no se tuvo en cuenta."})
+                               "colaboradores pueden registrar datos. Este no se tuvo en cuenta."})
+            continue
+        if "MOVIMIENTO" in s:
+            fila, resp = issue_pastoreo(issue, s, por_clave)
+            if fila:
+                nuevos_pastoreo.append(fila)
+            respuestas.append(resp)
             continue
         nombre = por_clave.get(_clave(s.get("POTRERO", "")))
         if not nombre:
@@ -538,6 +548,9 @@ def importar_issues(potreros):
     if nuevos:
         agregar_aforos(nuevos)
         log(f"Aforos nuevos desde GitHub: {len(nuevos)}")
+    if nuevos_pastoreo:
+        agregar_pastoreos(nuevos_pastoreo)
+        log(f"Entradas/salidas nuevas desde GitHub: {len(nuevos_pastoreo)}")
     if respuestas:
         ISSUES_A_CERRAR.parent.mkdir(parents=True, exist_ok=True)
         ISSUES_A_CERRAR.write_text(json.dumps(respuestas, ensure_ascii=False), encoding="utf-8")
@@ -614,6 +627,175 @@ def ajustar_con_aforos(serie, aforos_potrero, sat_en_aforo, config):
             continue
         s["aj"] = round(max(0.0, s["fv"] + (a["kg_fv_m2"] - base) * (1 - d / dias)), 3)
     return serie
+
+
+# ---------------------------------------------------------------- pastoreo y proyección
+
+COLUMNAS_PASTOREO = ["fecha", "potrero", "movimiento", "observaciones", "origen"]
+PASTOREOS = RAIZ / "pastoreos" / "pastoreos.csv"
+
+
+def leer_pastoreos(potreros):
+    """Entradas y salidas registradas (formulario del mapa o a mano). movimiento: entrada | salida."""
+    if not PASTOREOS.exists():
+        return []
+    por_clave = {_clave(p["nombre"]): p["nombre"] for p in potreros}
+    salida = []
+    with PASTOREOS.open(encoding="utf-8-sig") as f:
+        for r in csv.DictReader(f):
+            nombre = por_clave.get(_clave(r.get("potrero", "")))
+            mov = sin_tildes(str(r.get("movimiento", ""))).lower()
+            mov = "entrada" if mov.startswith("entr") else "salida" if mov.startswith("sal") else None
+            try:
+                dt.date.fromisoformat(r["fecha"])
+            except (TypeError, ValueError):
+                continue
+            if nombre and mov:
+                salida.append({**r, "potrero": nombre, "movimiento": mov})
+    return salida
+
+
+def agregar_pastoreos(nuevos):
+    existe = PASTOREOS.exists() and PASTOREOS.stat().st_size > 0
+    PASTOREOS.parent.mkdir(parents=True, exist_ok=True)
+    with PASTOREOS.open("a", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=COLUMNAS_PASTOREO)
+        if not existe:
+            w.writeheader()
+        for r in nuevos:
+            w.writerow({c: r.get(c, "") for c in COLUMNAS_PASTOREO})
+
+
+def issue_pastoreo(issue, s, por_clave):
+    """Convierte un formulario 'Registrar entrada/salida' en una fila; devuelve (fila o None, respuesta)."""
+    nombre = por_clave.get(_clave(s.get("POTRERO", "")))
+    fecha = s.get("FECHA") or issue["created_at"][:10]
+    mov = sin_tildes(s.get("MOVIMIENTO", "")).lower()
+    errores = []
+    if not nombre:
+        errores.append(f"no encontré el potrero «{s.get('POTRERO', '')}» (debe escribirse como sale en el mapa)")
+    try:
+        dt.date.fromisoformat(fecha)
+    except ValueError:
+        errores.append(f"la fecha «{fecha}» debe ser AAAA-MM-DD")
+    if not (mov.startswith("entr") or mov.startswith("sal")):
+        errores.append("falta decir si entraron o salieron los animales")
+    if errores:
+        return None, {"numero": issue["number"], "texto": "No se pudo registrar: " + "; ".join(errores)
+                      + ". Crea uno nuevo con los datos corregidos."}
+    mov = "entrada" if mov.startswith("entr") else "salida"
+    fila = {"fecha": fecha, "potrero": nombre, "movimiento": mov,
+            "observaciones": " ".join(s.get("OBSERVACIONES", "").split()), "origen": f"issue #{issue['number']}"}
+    texto = (f"Registrado: **{nombre}**, {'entraron' if mov == 'entrada' else 'salieron'} los animales el {fecha}. "
+             "El mapa ya lo tiene en cuenta para la proyección.")
+    return fila, {"numero": issue["number"], "texto": texto}
+
+
+def crecimiento(filas, especie_de, config):
+    """
+    Curva de rebrote por especie aprendida de la finca (crecimiento logístico):
+        dG/dt = r · G · (1 − G/K)
+    K = techo (percentil 95 de lo observado) y r se ajusta con los pares de imágenes despejadas
+    del mismo potrero en que el pasto no bajó (sin pastoreo de por medio).
+    """
+    cfg = config["pastoreo"]
+    por_pot = {}
+    for r in filas:
+        if r["sensor"] == "S2" and r.get("hist") and float(r["pct_valido"]) >= 0.8:
+            por_pot.setdefault(r["potrero"], []).append((dt.date.fromisoformat(r["fecha"]), float(r["kg_fv_m2"])))
+    resultado = {}
+    for esp in config["especies"]:
+        valores, pares = [], []
+        for pot, serie in por_pot.items():
+            if especie_de.get(pot) != esp:
+                continue
+            serie.sort()
+            valores += [v for _, v in serie]
+            for (fa, ga), (fb, gb) in zip(serie, serie[1:]):
+                dias = (fb - fa).days
+                if 3 <= dias <= 30 and gb - ga > -0.1:
+                    pares.append(((gb - ga) / dias, (ga + gb) / 2))
+        K = max(1.5, round(float(np.percentile(valores, 95)) * 1.05, 2)) if valores else 2.5
+        modelo = [m * (1 - m / K) for _, m in pares]
+        den = sum(x * x for x in modelo)
+        r = sum(o * x for (o, _), x in zip(pares, modelo)) / den if den else cfg["r_por_defecto"]
+        r = float(min(max(r, 0.02), 0.2))
+        resultado[esp] = {"r": round(r, 4), "K": K, "pares": len(pares), "propia": len(pares) >= cfg["min_pares_curva"]}
+    # Las especies con pocos pares toman la curva promedio de las que sí tienen suficientes.
+    buenas = [c for c in resultado.values() if c["propia"]]
+    for c in resultado.values():
+        if not c["propia"] and buenas:
+            c["r"] = round(sum(b["r"] for b in buenas) / len(buenas), 4)
+            c["K"] = round(sum(b["K"] for b in buenas) / len(buenas), 2)
+    return resultado
+
+
+def proyectar(g0, dias, r, K):
+    """Valor de la curva logística después de 'dias' partiendo de g0."""
+    if dias <= 0:
+        return g0
+    g0 = max(g0, 0.05)
+    if g0 >= K:
+        return g0
+    return K / (1 + (K - g0) / g0 * math.exp(-r * dias))
+
+
+def estado_pastoreo(s2, registros, actual, fecha_actual, curva, rotacion, config, hoy):
+    """
+    Dónde va el potrero en su ciclo y con cuántos kilos entraría.
+    Salida: la registrada; si el satélite ve un pastoreo más nuevo (caída fuerte) que lo registrado, esa.
+    """
+    cfg = config["pastoreo"]
+    descanso = cfg["descanso_por_rotacion"].get(rotacion, cfg["descanso_dias"])
+    salidas = sorted(r["fecha"] for r in registros if r["movimiento"] == "salida")
+    entradas = sorted(r["fecha"] for r in registros if r["movimiento"] == "entrada")
+    salida, fuente, entre = (salidas[-1], "registrada", None) if salidas else (None, None, None)
+
+    limpias = [x for x in s2 if x["v"] >= 0.8]
+    for a, b in zip(limpias, limpias[1:]):
+        if b["fv"] - a["fv"] <= -cfg["caida_minima_kg"]:
+            fa, fb = dt.date.fromisoformat(a["f"]), dt.date.fromisoformat(b["f"])
+            est = (fa + (fb - fa) / 2).isoformat()
+            if not salida or dt.date.fromisoformat(est) > dt.date.fromisoformat(salida) + dt.timedelta(days=10):
+                salida, fuente, entre = est, "detectada por satélite", [a["f"], b["f"]]
+
+    out = {"rotacion": rotacion, "descanso": descanso, "salida": salida, "fuente_salida": fuente,
+           "salida_entre": entre, "ocupado_desde": None,
+           "base": {"g0": round(actual, 3), "f0": fecha_actual} if actual is not None else None}
+    if entradas and (not salida or entradas[-1] > salida):
+        out["ocupado_desde"] = entradas[-1]
+        out["dias_ocupado"] = (hoy - dt.date.fromisoformat(entradas[-1])).days
+        return out
+    if not salida:
+        return out
+    f_salida = dt.date.fromisoformat(salida)
+    entrada = f_salida + dt.timedelta(days=descanso)
+    out["dias_descanso"] = (hoy - f_salida).days
+    # Punto de partida: el último dato si es posterior a la salida; si no, el residuo típico tras pastoreo.
+    if actual is not None and fecha_actual and dt.date.fromisoformat(fecha_actual) >= f_salida:
+        g0, f0 = actual, dt.date.fromisoformat(fecha_actual)
+    else:
+        g0, f0 = cfg["residuo_post_pastoreo_kg"], f_salida
+    out["base"] = {"g0": round(g0, 3), "f0": f0.isoformat()}
+    if (hoy - entrada).days > cfg["tolerancia_entrada_vencida"]:
+        # La salida conocida es de hace más de un ciclo: seguro hubo otro pastoreo que no se vio.
+        out["salida_vieja"] = True
+        if actual is not None:
+            out["base"] = {"g0": round(actual, 3), "f0": fecha_actual}
+        return out
+    out["entrada"] = entrada.isoformat()
+    out["faltan"] = (entrada - hoy).days
+    destino = max(entrada, hoy)
+    m = cfg["margen_crecimiento"]
+    dias = (destino - f0).days
+    out["proy_kg"] = round(proyectar(g0, dias, curva["r"], curva["K"]), 2)
+    out["proy_min"] = round(proyectar(g0, dias, curva["r"] * (1 - m), curva["K"]), 2)
+    out["proy_max"] = round(proyectar(g0, dias, curva["r"] * (1 + m), curva["K"]), 2)
+    out["proy_hoy"] = round(proyectar(g0, (hoy - f0).days, curva["r"], curva["K"]), 2)
+    out["serie_proy"] = [{"f": (f0 + dt.timedelta(days=d)).isoformat(),
+                          "kg": round(proyectar(g0, d, curva["r"], curva["K"]), 3)}
+                         for d in range(0, dias + 1, 3)] + [{"f": destino.isoformat(), "kg": out["proy_kg"]}]
+    return out
 
 
 def cerrar_issues():
@@ -854,8 +1036,11 @@ def buscar(catalogo, coleccion, bbox, desde, hasta, filtro=None):
 
 # ---------------------------------------------------------------- tablero
 
-def exportar_web(potreros, filas, config, aforos=(), calibracion=None):
-    por_potrero, aforos_de = {}, {}
+def exportar_web(potreros, filas, config, aforos=(), calibracion=None, pastoreos=(), curvas_crec=None):
+    por_potrero, aforos_de, pastoreos_de = {}, {}, {}
+    for r in pastoreos:
+        pastoreos_de.setdefault(r["potrero"], []).append(r)
+    hoy = dt.date.today()
     for r in filas:
         por_potrero.setdefault(r["potrero"], []).append(r)
     for a in aforos:
@@ -910,6 +1095,9 @@ def exportar_web(potreros, filas, config, aforos=(), calibracion=None):
             "t_fv_potrero": round(actual * ha_pasto * 10, 1) if actual is not None else None,
             "serie_s2": s2, "serie_s1": s1,
             "aforos": [{"f": a["fecha"], "kg": a["kg_fv_m2"], "metodo": a.get("metodo", "")} for a in mis_aforos],
+            "pastoreo": estado_pastoreo(s2, pastoreos_de.get(p["nombre"], []), actual, fecha,
+                                        (curvas_crec or {}).get(p["especie"], {"r": config["pastoreo"]["r_por_defecto"], "K": 2.5}),
+                                        p.get("rotacion", ""), config, hoy),
         }
         feats.append({"type": "Feature", "properties": props, "geometry": mapping(p["geom"])})
 
@@ -924,6 +1112,8 @@ def exportar_web(potreros, filas, config, aforos=(), calibracion=None):
                    for e, p in config["especies"].items()],
         "ndvi_suelo": config["ndvi_suelo"],
         "umbral_pobre": config["umbral_cobertura_pobre_kg"],
+        "crecimiento": curvas_crec or {},
+        "margen_crecimiento": config["pastoreo"]["margen_crecimiento"],
         "type": "FeatureCollection", "features": feats,
     }, ensure_ascii=False), encoding="utf-8")
 
@@ -1038,7 +1228,10 @@ def main():
 
     guardar_historial(filas)
     guardar_calibracion(pares, config, especie_de)
-    exportar_web(potreros, filas, config, aforos, calibracion)
+    pastoreos = leer_pastoreos(potreros)
+    curvas_crec = crecimiento(filas, especie_de, config)
+    log("Rebrote por especie: " + ", ".join(f"{e}: r={c['r']} K={c['K']} ({c['pares']} pares)" for e, c in curvas_crec.items()))
+    exportar_web(potreros, filas, config, aforos, calibracion, pastoreos, curvas_crec)
     log(f"Listo: {len(nuevas)} observaciones nuevas, {len(filas)} en total.")
 
 

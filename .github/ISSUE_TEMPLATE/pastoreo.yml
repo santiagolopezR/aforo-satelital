@@ -1,0 +1,29 @@
+name: Registrar entrada o salida de animales
+description: Cuándo entraron o salieron los animales de un potrero. Sirve para proyectar con cuántos kilos se entra.
+title: "Pastoreo"
+body:
+  - type: input
+    id: potrero
+    attributes:
+      label: Potrero
+      description: Nombre como sale en el mapa, por ejemplo HOLANDA 9
+    validations:
+      required: true
+  - type: dropdown
+    id: movimiento
+    attributes:
+      label: Movimiento
+      options:
+        - Salieron los animales
+        - Entraron los animales
+    validations:
+      required: true
+  - type: input
+    id: fecha
+    attributes:
+      label: Fecha
+      description: AAAA-MM-DD, por ejemplo 2026-10-19. Si se deja vacío se toma la fecha de hoy.
+  - type: textarea
+    id: obs
+    attributes:
+      label: Observaciones

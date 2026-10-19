@@ -66,6 +66,25 @@ También se pueden escribir directamente en `aforos_campo/aforos.csv`.
 
 **Modelo:** `kg MS/ha = k · (e^(b · (NDVI − 0,25)) − 1)`; con NDVI de suelo desnudo (≤ 0,25) da 0.
 
+## Pastoreo: con cuántos kilos va a entrar
+Cada potrero se ubica en su ciclo y se proyecta su forraje a la fecha de entrada.
+
+- **Salida de los animales:** la registrada; si no hay, la que ve el satélite (bajón fuerte entre dos
+  imágenes despejadas). Si la salida conocida es de hace más de un ciclo, se marca como "salida vieja"
+  y no se inventa la entrada.
+- **Entrada:** salida + días de descanso de la rotación (`config.json` → `pastoreo.descanso_por_rotacion`, hoy 30 en todas).
+- **Rebrote:** curva logística por especie aprendida de las imágenes de la finca (se recalcula en cada corrida).
+  Especies con menos de 10 pares de imágenes usan la curva de las demás.
+- **Proyección:** desde el último dato (satélite, aforo o residuo de 0,3 kg al salir) hasta la entrada,
+  con un rango de ±40 % en la velocidad de rebrote.
+
+**En el mapa:** selector "Colores: Hoy / En 7, 15, 30 días / A la entrada"; en cada potrero, la entrada
+proyectada y una casilla "¿Cómo estará en N días?".
+
+**Registrar entradas y salidas:** botón "Registrar entrada / salida de animales" en cada potrero
+(mismo sistema que los aforos), o a mano en `pastoreos/pastoreos.csv`
+(`fecha,potrero,movimiento,observaciones,origen`, movimiento = entrada o salida).
+
 ## Árboles y bosques (no cuentan como pasto)
 Un cuadrito de 10 m con más de la mitad bajo árboles se saca del NDVI, de los kilos y del área en pasto.
 En el mapa de detalle se pintan en verde intenso.
