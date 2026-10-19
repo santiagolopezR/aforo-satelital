@@ -194,7 +194,7 @@ const enlaceAforo = nombre => `${REPO}/issues/new?template=aforo.yml&title=${enc
   + `&potrero=${encodeURIComponent(nombre)}&fecha=${hoyISO()}`;
 const AZUL = "#2b6cb0", MORADO = "#7b4fbf";
 const enlacePastoreo = nombre => `${REPO}/issues/new?template=pastoreo.yml&title=${encodeURIComponent("Pastoreo " + nombre)}`
-  + `&potrero=${encodeURIComponent(nombre)}&fecha=${hoyISO()}`;
+  + `&potrero=${encodeURIComponent(nombre)}`;  // sin fecha: hay que escribir el día real del movimiento
 const masDias = (f, d) => new Date(new Date(f + "T12:00:00").getTime() + d * 864e5).toISOString().slice(0, 10);
 const entreFechas = (a, b) => Math.round((new Date(b + "T12:00:00") - new Date(a + "T12:00:00")) / 864e5);
 let vista = "hoy";  // color del mapa: "hoy", número de días, o "entrada"

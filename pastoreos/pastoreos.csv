@@ -1,5 +1,8 @@
 fecha,potrero,movimiento,observaciones,origen
-2026-10-19,TRILLA 1,entrada,,issue #2
-2026-10-19,HOLANDA 8,entrada,,issue #1
-2026-10-19,HOLANDA 15,entrada,,issue #3
+2026-10-10,HOLANDA 8,entrada,fecha corregida (el formulario traía la de hoy),issue #1
+2026-10-13,HOLANDA 8,salida,salieron al entrar al siguiente potrero de la rotación,chat
+2026-10-13,TRILLA 1,entrada,fecha corregida (el formulario traía la de hoy),issue #2
+2026-10-16,TRILLA 1,salida,salieron al entrar al siguiente potrero de la rotación,chat
 2026-10-16,TRILLA 2.3,entrada,,issue #4
+2026-10-19,HOLANDA 15,entrada,,issue #3
+2026-10-19,TRILLA 2.3,salida,salieron al entrar al siguiente potrero de la rotación,chat

@@ -22,7 +22,10 @@ body:
     id: fecha
     attributes:
       label: Fecha
-      description: AAAA-MM-DD, por ejemplo 2026-10-19. Si se deja vacío se toma la fecha de hoy.
+      description: "Día en que entraron o salieron, AAAA-MM-DD (por ejemplo 2026-10-10)"
+      placeholder: "2026-10-10"
+    validations:
+      required: true
   - type: textarea
     id: obs
     attributes:
