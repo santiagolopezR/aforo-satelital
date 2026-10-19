@@ -774,6 +774,10 @@ def estado_pastoreo(s2, registros, actual, fecha_actual, curva, rotacion, config
     # Punto de partida: el último dato si es posterior a la salida; si no, el residuo típico tras pastoreo.
     if actual is not None and fecha_actual and dt.date.fromisoformat(fecha_actual) >= f_salida:
         g0, f0 = actual, dt.date.fromisoformat(fecha_actual)
+    elif actual is not None:
+        # Sin imagen después de la salida: lo que había antes menos lo que se consume en un pastoreo
+        # (misma escala del modelo; el ensayo de La Holanda mostró que baja ~1/3).
+        g0, f0 = actual * (1 - cfg["consumo_pastoreo"]), f_salida
     else:
         g0, f0 = cfg["residuo_post_pastoreo_kg"], f_salida
     out["base"] = {"g0": round(g0, 3), "f0": f0.isoformat()}

@@ -44,7 +44,7 @@
     }
   },
   "pastoreo": {
-    "_nota": "Días de descanso por rotación (cámbialos aquí). caida_minima_kg: bajón entre dos imágenes despejadas que se toma como pastoreo. residuo_post_pastoreo_kg: con cuánto queda el potrero al salir los animales si no hay imagen después. margen_crecimiento: ± para el rango de la proyección.",
+    "_nota": "Días de descanso por rotación (cámbialos aquí). caida_minima_kg: bajón entre dos imágenes despejadas que se toma como pastoreo. residuo_post_pastoreo_kg: con cuánto queda el potrero al salir los animales si no hay imagen después. margen_crecimiento: ± para el rango de la proyección. consumo_pastoreo: fracción que baja el potrero en un pastoreo (ensayo La Holanda: 0,33), se usa para el residuo al salir cuando no hay imagen después.",
     "descanso_dias": 30,
     "descanso_por_rotacion": {
       "ESCOCIA": 30,
@@ -60,6 +60,7 @@
     "r_por_defecto": 0.06,
     "margen_crecimiento": 0.4,
     "min_pares_curva": 10,
-    "tolerancia_entrada_vencida": 7
+    "tolerancia_entrada_vencida": 7,
+    "consumo_pastoreo": 0.33
   }
 }
