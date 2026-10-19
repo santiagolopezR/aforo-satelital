@@ -32,8 +32,9 @@ import pystac_client
 import rasterio
 from pyproj import Transformer
 from rasterio.enums import Resampling
-from rasterio.errors import WindowError
-from rasterio.features import geometry_mask
+from rasterio.errors import NotGeoreferencedWarning, WindowError
+from rasterio.features import geometry_mask, rasterize
+from rasterio.warp import Resampling as ResamplingWarp, calculate_default_transform, reproject
 from rasterio.windows import Window, from_bounds
 from shapely.geometry import MultiPolygon, Polygon, box, mapping, shape
 from shapely.ops import transform as shp_transform, unary_union
@@ -45,7 +46,11 @@ SALIDA_WEB = RAIZ / "docs" / "datos.json"
 STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
 
 COLUMNAS = ["fecha", "potrero", "especie", "sensor", "escena", "pct_valido",
-            "ndvi", "evi", "ndre", "msavi", "vv_db", "vh_db", "kg_ms_ha", "kg_fv_m2"]
+            "ndvi", "evi", "ndre", "msavi", "vv_db", "vh_db", "kg_ms_ha", "kg_fv_m2", "pct_pobre", "hist"]
+CARPETA_PIXELES = RAIZ / "docs" / "pixeles"
+
+# Histograma del NDVI de los píxeles de cada potrero: clases de 0,01 entre -0,2 y 1,0.
+HIST_MIN, HIST_PASO, HIST_N = -0.2, 0.01, 120
 
 ALIAS_ESPECIE = {
     "humidicola": "humidicola", "brachiaria humidicola": "humidicola", "humidicula": "humidicola",
@@ -57,6 +62,11 @@ ALIAS_ESPECIE = {
 # Clases SCL de Sentinel-2 que se aceptan: 4 = vegetación, 5 = suelo desnudo.
 SCL_VALIDAS = (4, 5)
 
+
+import warnings
+
+# Los PNG del mapa de detalle no llevan georreferencia propia (va en pixeles/indice.json).
+warnings.filterwarnings("ignore", category=NotGeoreferencedWarning)
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -245,6 +255,33 @@ def forma_curva(ndvi, p, config):
     return max(0.0, math.exp(p["b"] * (ndvi - config["ndvi_suelo"])) - 1)
 
 
+def histograma(ndvi_pixeles):
+    """Cuenta los píxeles por clase de NDVI; se guarda como texto 'clase:cantidad ...'."""
+    idx = np.clip(((ndvi_pixeles - HIST_MIN) / HIST_PASO).astype(int), 0, HIST_N - 1)
+    cuentas = np.bincount(idx, minlength=HIST_N)
+    return " ".join(f"{i}:{c}" for i, c in enumerate(cuentas) if c)
+
+
+def estimar_por_pixel(hist, especie, config):
+    """
+    Convierte cada píxel a kg con la curva de la especie y promedia (más exacto que promediar el NDVI).
+    Devuelve (kg MS/ha, kg FV/m2, fracción del potrero con cobertura pobre).
+    """
+    total = ms_sum = fv_sum = pobre = 0
+    umbral = config["umbral_cobertura_pobre_kg"]
+    for par in hist.split():
+        i, c = (int(v) for v in par.split(":"))
+        ms, fv = estimar(HIST_MIN + (i + 0.5) * HIST_PASO, especie, config)
+        total += c
+        ms_sum += ms * c
+        fv_sum += fv * c
+        if fv < umbral:
+            pobre += c
+    if not total:
+        return 0.0, 0.0, 0.0
+    return round(ms_sum / total), round(fv_sum / total, 3), round(pobre / total, 3)
+
+
 def estimar(ndvi, especie, config):
     """Devuelve (kg MS/ha, kg FV/m2) según la curva de la especie."""
     p = config["especies"][especie]
@@ -377,7 +414,7 @@ def emparejar(aforos, filas, config):
     """A cada aforo le busca la imagen Sentinel-2 más cercana del mismo potrero."""
     s2 = {}
     for r in filas:
-        if r["sensor"] == "S2" and r.get("ndvi") not in ("", None):
+        if r["sensor"] == "S2" and r.get("hist"):
             s2.setdefault(r["potrero"], []).append(r)
     pares = []
     for a in aforos:
@@ -513,6 +550,48 @@ def epsg_de(item, asset):
         return src.crs.to_epsg()
 
 
+def guardar_pixeles(fecha, ndvi, valido, potreros, geoms, transf, epsg, config):
+    """
+    Guarda una imagen PNG de la finca en coordenadas GPS para el mapa de detalle:
+    rojo = NDVI (0-250), verde = especie del potrero (1, 2, ...), alfa = píxel útil.
+    El navegador convierte cada píxel a kg con la curva vigente de su especie.
+    """
+    especies = list(config["especies"])
+    cod_especie = rasterize(
+        [(mapping(geoms[p["nombre"]]), especies.index(p["especie"]) + 1) for p in potreros],
+        out_shape=ndvi.shape, transform=transf, fill=0, dtype="uint8")
+    rojo = (np.clip(np.nan_to_num(ndvi, nan=0), 0, 1) * 250).astype("uint8")
+    alfa = np.where(valido & (cod_especie > 0), 255, 0).astype("uint8")
+
+    alto, ancho = ndvi.shape
+    izq, abajo = transf * (0, alto)
+    der, arriba = transf * (ancho, 0)
+    dst_t, dst_w, dst_h = calculate_default_transform(epsg, 4326, ancho, alto, izq, abajo, der, arriba)
+    bandas = []
+    for banda in (rojo, cod_especie, np.zeros_like(rojo), alfa):
+        destino = np.zeros((dst_h, dst_w), dtype="uint8")
+        reproject(banda, destino, src_transform=transf, src_crs=epsg, dst_transform=dst_t, dst_crs=4326,
+                  resampling=ResamplingWarp.nearest)
+        bandas.append(destino)
+    utiles = int((bandas[3] > 0).sum())
+    if not utiles:
+        return
+
+    CARPETA_PIXELES.mkdir(parents=True, exist_ok=True)
+    ruta_indice = CARPETA_PIXELES / "indice.json"
+    indice = json.loads(ruta_indice.read_text(encoding="utf-8")) if ruta_indice.exists() else {}
+    if fecha in indice and indice[fecha]["utiles"] >= utiles:
+        return  # ya hay una imagen de ese día con más píxeles útiles
+    with rasterio.open(CARPETA_PIXELES / f"{fecha}.png", "w", driver="PNG", width=dst_w, height=dst_h,
+                       count=4, dtype="uint8") as dst:
+        dst.write(np.stack(bandas))
+    oeste, norte = dst_t * (0, 0)
+    este, sur = dst_t * (dst_w, dst_h)
+    indice[fecha] = {"limites": [[round(sur, 7), round(oeste, 7)], [round(norte, 7), round(este, 7)]],
+                     "utiles": utiles}
+    ruta_indice.write_text(json.dumps(dict(sorted(indice.items())), indent=1), encoding="utf-8")
+
+
 def procesar_s2(item, potreros, config):
     epsg = epsg_de(item, "B04")
     geoms = preparar_geoms(potreros, epsg, config["recorte_borde_m"])
@@ -558,6 +637,9 @@ def procesar_s2(item, potreros, config):
 
     r, n, b, re = refl(rojo), refl(nir), refl(azul), refl(borde_rojo)
     validos_img = np.isin(scl, SCL_VALIDAS) & (rojo > 0) & (nir > 0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ndvi_img = (n - r) / (n + r)
+    validos_img &= np.isfinite(ndvi_img)
 
     filas = []
     for p in potreros:
@@ -574,7 +656,7 @@ def procesar_s2(item, potreros, config):
             continue
         rr, nn, bb, ee = r[ok], n[ok], b[ok], re[ok]
         with np.errstate(divide="ignore", invalid="ignore"):
-            ndvi = np.nanmean((nn - rr) / (nn + rr))
+            ndvi = np.nanmean(ndvi_img[ok])
             evi = np.nanmean(2.5 * (nn - rr) / (nn + 6 * rr - 7.5 * bb + 1))
             ndre = np.nanmean((nn - ee) / (nn + ee))
             msavi = np.nanmean((2 * nn + 1 - np.sqrt((2 * nn + 1) ** 2 - 8 * (nn - rr))) / 2)
@@ -582,7 +664,10 @@ def procesar_s2(item, potreros, config):
             "fecha": item.datetime.date().isoformat(), "potrero": p["nombre"], "especie": p["especie"],
             "sensor": "S2", "escena": item.id, "pct_valido": _num(pct, 3),
             "ndvi": _num(ndvi), "evi": _num(evi), "ndre": _num(ndre), "msavi": _num(msavi),
+            "hist": histograma(ndvi_img[ok]),
         })
+    if filas:
+        guardar_pixeles(item.datetime.date().isoformat(), ndvi_img, validos_img, potreros, geoms, transf, epsg, config)
     return filas
 
 
@@ -640,7 +725,8 @@ def exportar_web(potreros, filas, config, aforos=(), calibracion=None):
     for p in potreros:
         serie = sorted(por_potrero.get(p["nombre"], []), key=lambda r: r["fecha"])
         s2 = [{"f": r["fecha"], "fv": float(r["kg_fv_m2"]), "ms": float(r["kg_ms_ha"]),
-               "ndvi": float(r["ndvi"]), "v": float(r["pct_valido"])} for r in serie if r["sensor"] == "S2"]
+               "ndvi": float(r["ndvi"]), "v": float(r["pct_valido"]), "pobre": float(r["pct_pobre"])}
+              for r in serie if r["sensor"] == "S2" and r.get("hist")]
         s1 = [{"f": r["fecha"], "vv": float(r["vv_db"]), "vh": float(r["vh_db"])}
               for r in serie if r["sensor"] == "S1" and r["vv_db"] != "" and r["vh_db"] != ""]
         mis_aforos = sorted(aforos_de.get(p["nombre"], []), key=lambda a: a["fecha"])
@@ -674,6 +760,7 @@ def exportar_web(potreros, filas, config, aforos=(), calibracion=None):
             "ultima_fecha_satelite": s2[-1]["f"] if s2 else None,
             "kg_ms_ha": s2[-1]["ms"] if s2 else None,
             "ndvi": s2[-1]["ndvi"] if s2 else None,
+            "pct_pobre": s2[-1]["pobre"] if s2 else None,
             "t_fv_potrero": round(actual * ha * 10, 1) if actual is not None else None,
             "serie_s2": s2, "serie_s1": s1,
             "aforos": [{"f": a["fecha"], "kg": a["kg_fv_m2"], "metodo": a.get("metodo", "")} for a in mis_aforos],
@@ -687,6 +774,10 @@ def exportar_web(potreros, filas, config, aforos=(), calibracion=None):
         "modelo": ("calibrado con aforos: " + ", ".join(calibradas)) if calibradas else "provisional sin calibrar",
         "calibracion": calibracion or {},
         "aforos_total": len(aforos),
+        "curvas": [dict(id=e, **{c: p[c] for c in ("k", "b", "max_kg_ms_ha", "pct_ms")})
+                   for e, p in config["especies"].items()],
+        "ndvi_suelo": config["ndvi_suelo"],
+        "umbral_pobre": config["umbral_cobertura_pobre_kg"],
         "type": "FeatureCollection", "features": feats,
     }, ensure_ascii=False), encoding="utf-8")
 
@@ -705,24 +796,29 @@ def main():
     nombres = {p["nombre"] for p in potreros}
     # Se descartan filas de potreros que ya no están en la carpeta.
     historial = [r for r in leer_historial() if r["potrero"] in nombres]
+    # Las filas Sentinel-2 anteriores al cálculo por píxel se vuelven a procesar.
+    historial = [r for r in historial if r["sensor"] != "S2" or r.get("hist")]
     hechos = {(r["escena"], r["potrero"]) for r in historial}
 
     hoy = dt.date.today()
     inicio_nuevo = hoy - dt.timedelta(days=config["dias_historial_inicial"])
-    ultimas = {}
-    for r in historial:
-        ultimas[r["potrero"]] = max(ultimas.get(r["potrero"], r["fecha"]), r["fecha"])
-    # Desde la fecha más vieja que haga falta (potreros nuevos piden todo el historial inicial).
-    desde = min(
-        (dt.date.fromisoformat(ultimas[n]) - dt.timedelta(days=5)) if n in ultimas else inicio_nuevo
-        for n in nombres
-    )
-    desde = max(desde, inicio_nuevo)
+
+    def desde_para(sensor):
+        """Fecha más vieja que haga falta buscar (potreros nuevos piden todo el historial inicial)."""
+        ultimas = {}
+        for r in historial:
+            if r["sensor"] == sensor:
+                ultimas[r["potrero"]] = max(ultimas.get(r["potrero"], r["fecha"]), r["fecha"])
+        d = min((dt.date.fromisoformat(ultimas[n]) - dt.timedelta(days=5)) if n in ultimas else inicio_nuevo
+                for n in nombres)
+        return max(d, inicio_nuevo)
+
     bbox = list(unary_union([p["geom"] for p in potreros]).bounds)
 
     catalogo = pystac_client.Client.open(STAC_URL, modifier=planetary_computer.sign_inplace)
     nuevas = []
 
+    desde = desde_para("S2")
     s2 = buscar(catalogo, "sentinel-2-l2a", bbox, desde, hoy,
                 {"eo:cloud_cover": {"lt": config["max_nubes_escena"]}})
     log(f"Sentinel-2: {len(s2)} escenas desde {desde}")
@@ -740,6 +836,7 @@ def main():
         # Escena revisada aunque estuviera nublada: se marca para no volver a bajarla.
         hechos.update((item.id, p["nombre"]) for p in pendientes)
 
+    desde = desde_para("S1")
     s1 = buscar(catalogo, "sentinel-1-rtc", bbox, desde, hoy)
     log(f"Sentinel-1: {len(s1)} escenas desde {desde}")
     for item in sorted(s1, key=lambda i: i.datetime):
@@ -779,8 +876,8 @@ def main():
     # El modelo se recalcula siempre, así un cambio de calibración se aplica a todo el historial.
     for r in filas:
         r["especie"] = especie_de[r["potrero"]]
-        if r["sensor"] == "S2" and r.get("ndvi") not in ("", None):
-            r["kg_ms_ha"], r["kg_fv_m2"] = estimar(float(r["ndvi"]), r["especie"], config)
+        if r["sensor"] == "S2" and r.get("hist"):
+            r["kg_ms_ha"], r["kg_fv_m2"], r["pct_pobre"] = estimar_por_pixel(r["hist"], r["especie"], config)
 
     guardar_historial(filas)
     guardar_calibracion(pares, config, especie_de)
@@ -796,6 +893,7 @@ OPCIONES_GDAL = dict(
     GDAL_HTTP_MULTIPLEX="YES",
     GDAL_HTTP_MAX_RETRY="4",
     GDAL_HTTP_RETRY_DELAY="3",
+    GDAL_PAM_ENABLED="NO",  # no crear archivos .aux.xml junto a los PNG
 )
 
 if __name__ == "__main__":

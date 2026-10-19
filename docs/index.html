@@ -44,6 +44,11 @@
   td:first-child, th:first-child { text-align: left; }
   .boton { display: block; text-align: center; margin: 10px 0 4px; padding: 10px; border-radius: 8px; background: var(--acento); color: var(--panel); font-weight: 600; text-decoration: none; }
   .aforo-txt { color: #2b6cb0; }
+  .pixelado { image-rendering: pixelated; }
+  .control-detalle { background: var(--panel); color: var(--texto); padding: 6px 8px; border-radius: 6px; font-size: 13px; }
+  .control-detalle select { margin-top: 4px; font: inherit; background: var(--fondo); color: var(--texto); border: 1px solid var(--borde); border-radius: 4px; }
+  .pobre { color: #c0392b; }
+  @media (prefers-color-scheme: dark) { .pobre { color: #f08a7e; } }
   @media (prefers-color-scheme: dark) { .aforo-txt { color: #7fb3f0; } }
   @media (max-width: 800px) {
     main { grid-template-columns: 1fr; }
@@ -86,7 +91,63 @@ leyenda.onAdd = () => {
 };
 leyenda.addTo(mapa);
 
-let capas = {}, activo = null;
+let capas = {}, activo = null, datosGlobal = null, indicePixeles = {}, capaPixeles = null, detalleOn = false;
+
+// kg FV/m2 de un píxel con la curva vigente de su especie (igual que aforo.py).
+function fvPixel(ndvi, cod) {
+  const c = datosGlobal.curvas[cod - 1];
+  if (!c) return null;
+  const f = Math.max(0, Math.exp(c.b * (ndvi - datosGlobal.ndvi_suelo)) - 1);
+  return Math.min(c.k * f, c.max_kg_ms_ha) / c.pct_ms / 10000;
+}
+const hexRGB = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+
+async function pintarPixeles(fecha) {
+  if (capaPixeles) { mapa.removeLayer(capaPixeles); capaPixeles = null; }
+  const info = indicePixeles[fecha];
+  if (!detalleOn || !info) return;
+  const img = new Image();
+  img.src = `pixeles/${fecha}.png`;
+  await img.decode();
+  const cv = document.createElement("canvas");
+  cv.width = img.width; cv.height = img.height;
+  const cx = cv.getContext("2d");
+  cx.drawImage(img, 0, 0);
+  const d = cx.getImageData(0, 0, cv.width, cv.height);
+  for (let i = 0; i < d.data.length; i += 4) {
+    if (!d.data[i + 3]) continue;
+    const fv = fvPixel(d.data[i] / 250, d.data[i + 1]);
+    const [r, g, b] = hexRGB(color(fv));
+    d.data[i] = r; d.data[i + 1] = g; d.data[i + 2] = b; d.data[i + 3] = 235;
+  }
+  cx.putImageData(d, 0, 0);
+  capaPixeles = L.imageOverlay(cv.toDataURL(), info.limites, { className: "pixelado", interactive: false }).addTo(mapa);
+  Object.values(capas).forEach(({ capa }) => capa.bringToFront());
+}
+
+function controlDetalle() {
+  const fechas = Object.keys(indicePixeles).sort().reverse();
+  if (!fechas.length) return;
+  const ctl = L.control({ position: "topright" });
+  ctl.onAdd = () => {
+    const d = L.DomUtil.create("div", "control-detalle");
+    d.innerHTML = `<label><input type="checkbox" id="chkDetalle"> Detalle 10 m</label><br>
+      <select id="selFecha">${fechas.map(f => `<option>${f}</option>`).join("")}</select>`;
+    L.DomEvent.disableClickPropagation(d);
+    return d;
+  };
+  ctl.addTo(mapa);
+  const chk = document.getElementById("chkDetalle"), sel = document.getElementById("selFecha");
+  const aplicar = () => {
+    detalleOn = chk.checked;
+    // Con el detalle prendido los potreros quedan solo con el borde para ver los píxeles.
+    Object.values(capas).forEach(({ feature, capa }) => capa.setStyle({
+      fillOpacity: detalleOn ? 0 : 0.55, color: detalleOn ? "#fff" : "#fff", weight: detalleOn ? 1 : 1.5 }));
+    pintarPixeles(sel.value);
+  };
+  chk.addEventListener("change", aplicar);
+  sel.addEventListener("change", aplicar);
+}
 const REPO = location.hostname.endsWith("github.io")
   ? `https://github.com/${location.hostname.split(".")[0]}/${location.pathname.split("/")[1]}`
   : "https://github.com/santiagolopezR/aforo-satelital";
@@ -125,6 +186,11 @@ function mostrar(nombre) {
   const { feature, capa } = capas[nombre];
   const p = feature.properties;
   mapa.fitBounds(capa.getBounds(), { maxZoom: 17, padding: [30, 30] });
+  const sel = document.getElementById("selFecha");
+  if (sel && p.ultima_fecha_satelite && indicePixeles[p.ultima_fecha_satelite] && sel.value !== p.ultima_fecha_satelite) {
+    sel.value = p.ultima_fecha_satelite;
+    pintarPixeles(sel.value);
+  }
   const filas = [
     ...p.serie_s2.map(s => ({ f: s.f, html: `<td>${s.f}</td><td>${fmt(s.aj ?? s.fv)}${s.aj != null ? "*" : ""}</td><td>${fmt(s.ndvi)}</td><td>${Math.round(s.v * 100)}%</td>` })),
     ...p.aforos.map(a => ({ f: a.f, html: `<td class="aforo-txt">${a.f} ◆</td><td class="aforo-txt">${fmt(a.kg)}</td><td colspan="2" class="aforo-txt" style="text-align:left">aforo · ${esc(a.metodo || "")}</td>` })),
@@ -135,13 +201,19 @@ function mostrar(nombre) {
     <div class="meta">${esc(p.especie_nombre)} · ${fmt(p.area_ha)} ha · ${p.ultima_fecha ? esc(p.fuente) + " del " + p.ultima_fecha : "sin imagen útil todavía"}</div>
     <div class="fila" style="margin:8px 0"><div><span class="valor">${fmt(p.kg_fv_m2)}</span> <span class="unidad">kg FV/m²</span></div>
     <div><span class="valor">${fmt(p.t_fv_potrero, 1)}</span> <span class="unidad">t FV en el potrero</span></div></div>
+    ${p.pct_pobre != null ? `<div class="meta ${p.pct_pobre >= 0.1 ? "pobre" : ""}">Cobertura pobre (menos de ${fmt(datosGlobal.umbral_pobre, 1)} kg FV/m²): <b>${Math.round(p.pct_pobre * 100)} %</b> del potrero · imagen del ${p.ultima_fecha_satelite}</div>` : ""}
     ${grafica(p.serie_s2, p.aforos)}
     <a class="boton" href="${enlaceAforo(p.nombre)}" target="_blank" rel="noopener">Registrar aforo de este potrero</a>
     <table><tr><th>Fecha</th><th>kg FV/m²</th><th>NDVI</th><th>Despejado</th></tr>${filas}</table>
     ${p.serie_s2.some(s => s.aj != null) ? '<div class="meta">* corregido con el último aforo de campo</div>' : ""}`;
 }
 
-fetch("datos.json", { cache: "no-store" }).then(r => r.json()).then(datos => {
+Promise.all([
+  fetch("datos.json", { cache: "no-store" }).then(r => r.json()),
+  fetch("pixeles/indice.json", { cache: "no-store" }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
+]).then(([datos, indice]) => {
+  datosGlobal = datos;
+  indicePixeles = indice;
   const act = new Date(datos.actualizado);
   document.getElementById("actualizado").textContent =
     `Actualizado ${act.toLocaleString("es-CO", { dateStyle: "medium", timeStyle: "short" })} · ${datos.features.length} potreros · ${datos.aforos_total || 0} aforos de campo`;
@@ -162,6 +234,7 @@ fetch("datos.json", { cache: "no-store" }).then(r => r.json()).then(datos => {
     capas[p.nombre] = { feature: f, capa };
   }
   mapa.fitBounds(grupo.getBounds(), { padding: [20, 20], maxZoom: 16 });
+  controlDetalle();
 
   const orden = [...datos.features].sort((a, b) => (b.properties.kg_fv_m2 ?? -1) - (a.properties.kg_fv_m2 ?? -1));
   document.getElementById("lista").innerHTML = orden.map(({ properties: p }) => {
@@ -171,7 +244,7 @@ fetch("datos.json", { cache: "no-store" }).then(r => r.json()).then(datos => {
     return `<div class="tarjeta" data-n="${esc(p.nombre)}">
       <div class="fila"><span class="nombre"><span class="punto" style="background:${color(p.kg_fv_m2)}"></span>${esc(p.nombre)}</span>
       <span class="valor">${fmt(p.kg_fv_m2)} <span class="unidad">kg FV/m²</span></span></div>
-      <div class="meta">${esc(p.especie_nombre)} · ${fmt(p.area_ha)} ha · <span class="${d > 10 ? "viejo" : ""}">${edad}</span></div></div>`;
+      <div class="meta">${esc(p.especie_nombre)} · ${fmt(p.area_ha)} ha · <span class="${d > 10 ? "viejo" : ""}">${edad}</span>${p.pct_pobre >= 0.1 ? ` · <span class="pobre">${Math.round(p.pct_pobre * 100)} % pobre</span>` : ""}</div></div>`;
   }).join("");
   document.querySelectorAll(".tarjeta[data-n]").forEach(t => t.addEventListener("click", () => mostrar(t.dataset.n)));
 }).catch(() => {
