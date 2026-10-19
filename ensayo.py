@@ -180,7 +180,7 @@ def main(rotacion, dias):
     for r in mejor.values():
         if "kg" in r and float(r["pct_valido"]) >= 0.8:
             por_fecha.setdefault((r["fecha"], r["sensor"]), []).append(r["kg"])
-    minimo = max(5, len(potreros) // 3)
+    minimo = max(8, len(potreros) // 2)  # con pocos potreros despejados la mediana no representa la rotación
     mediana = {k: statistics.median(v) for k, v in por_fecha.items() if len(v) >= minimo}
 
     salida = {"rotacion": rotacion.upper(), "desde": desde.isoformat(), "hasta": hoy.isoformat(),
