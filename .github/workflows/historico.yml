@@ -40,6 +40,8 @@ jobs:
       - name: Recalibrar con todo
         run: python aforo.py
       - name: Guardar resultados
+        env:
+          FINCA: ${{ github.event.inputs.finca || 'altos_de_medina' }}
         run: |
           git config user.name "aforo-bot"
           git config user.email "aforo-bot@users.noreply.github.com"
@@ -53,7 +55,10 @@ jobs:
             git fetch origin main
             if git rebase origin/main && git push origin HEAD:main; then exit 0; fi
             git rebase --abort 2>/dev/null || true
+            # Se guardan aparte las imágenes históricas para no perderlas al partir de lo más nuevo.
+            mkdir -p /tmp/hist && cp -r data/*/historial_largo.csv data/*/escenas_revisadas.txt data/*/historico_estado.json /tmp/hist/ 2>/dev/null || true
             git reset --hard origin/main
+            cp /tmp/hist/* "data/$FINCA/" 2>/dev/null || true
             python aforo.py
             guardar
           done
