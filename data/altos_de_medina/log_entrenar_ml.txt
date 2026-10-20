@@ -1,8 +1,8 @@
-Solo NDVI: prueba 2025-26 {'n': 922, 'r2': -0.447, 'rmse': 0.417, 'mae': 0.324, 'mae_pct': 16.1, 'sesgo': -0.2} | potreros no vistos R² -0.043
-Sentinel-2: todas las bandas e índices: prueba 2025-26 {'n': 922, 'r2': -0.557, 'rmse': 0.433, 'mae': 0.334, 'mae_pct': 16.7, 'sesgo': -0.214} | potreros no vistos R² 0.028
-Sentinel-2 + radar + Landsat + clima: prueba 2025-26 {'n': 922, 'r2': -0.324, 'rmse': 0.399, 'mae': 0.306, 'mae_pct': 15.3, 'sesgo': -0.187} | potreros no vistos R² 0.225
-Todo lo anterior + manejo (descanso, mes): prueba 2025-26 {'n': 922, 'r2': -0.368, 'rmse': 0.406, 'mae': 0.315, 'mae_pct': 15.7, 'sesgo': -0.199} | potreros no vistos R² 0.259
-Solo radar + clima (días nublados): prueba 2025-26 {'n': 1926, 'r2': -0.221, 'rmse': 0.395, 'mae': 0.3, 'mae_pct': 15.2, 'sesgo': -0.163} | potreros no vistos R² 0.164
-Radar + clima + manejo: prueba 2025-26 {'n': 1926, 'r2': -0.221, 'rmse': 0.395, 'mae': 0.302, 'mae_pct': 15.3, 'sesgo': -0.163} | potreros no vistos R² 0.228
+Solo NDVI: prueba 2025-26 {'n': 1721, 'r2': -0.383, 'rmse': 0.415, 'mae': 0.322, 'mae_pct': 16.2, 'sesgo': -0.188} | potreros no vistos R² -0.003
+Sentinel-2: todas las bandas e índices: prueba 2025-26 {'n': 1721, 'r2': -0.441, 'rmse': 0.423, 'mae': 0.322, 'mae_pct': 16.1, 'sesgo': -0.2} | potreros no vistos R² 0.106
+Sentinel-2 + radar + Landsat + clima: prueba 2025-26 {'n': 1721, 'r2': -0.211, 'rmse': 0.388, 'mae': 0.295, 'mae_pct': 14.8, 'sesgo': -0.163} | potreros no vistos R² 0.243
+Todo lo anterior + manejo (descanso, mes): prueba 2025-26 {'n': 1721, 'r2': -0.221, 'rmse': 0.39, 'mae': 0.297, 'mae_pct': 15.0, 'sesgo': -0.169} | potreros no vistos R² 0.264
+Solo radar + clima (días nublados): prueba 2025-26 {'n': 1926, 'r2': -0.231, 'rmse': 0.396, 'mae': 0.302, 'mae_pct': 15.3, 'sesgo': -0.159} | potreros no vistos R² 0.164
+Radar + clima + manejo: prueba 2025-26 {'n': 1926, 'r2': -0.228, 'rmse': 0.396, 'mae': 0.304, 'mae_pct': 15.5, 'sesgo': -0.159} | potreros no vistos R² 0.229
 Control sin satélite: clima + manejo: prueba 2025-26 {'n': 1926, 'r2': -0.223, 'rmse': 0.395, 'mae': 0.302, 'mae_pct': 15.4, 'sesgo': -0.156} | potreros no vistos R² 0.233
 Listo: /home/runner/work/aforo-satelital/aforo-satelital/docs/altos_de_medina/modelo_ml.json
