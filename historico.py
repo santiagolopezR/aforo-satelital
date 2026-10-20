@@ -51,7 +51,8 @@ def main(slug, minutos):
 
     aforos = aforo.leer_aforos(potreros)
     fechas = sorted({dt.date.fromisoformat(a["fecha"]) for a in aforos})
-    antes = config.get("dias_par_antes", config["dias_par_aforo_imagen"])
+    # Para el modelo de machine learning se traen también imágenes más viejas (el modelo usa su edad).
+    antes = config.get("dias_historico_antes", config.get("dias_par_antes", config["dias_par_aforo_imagen"]))
     despues = config.get("dias_par_despues", config["dias_par_aforo_imagen"])
     lista_rangos = rangos(fechas, antes, despues)
     log(f"{f['nombre']}: {len(aforos)} aforos en {len(fechas)} fechas -> {len(lista_rangos)} rangos de búsqueda")

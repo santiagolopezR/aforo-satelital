@@ -39,6 +39,8 @@ NOMBRES = {
     "l_ndvi": "Landsat NDVI", "l_ndmi": "Landsat NDMI", "l_nbr": "Landsat NBR", "l_swir1": "Landsat onda corta 1",
     "l_swir2": "Landsat onda corta 2", "l_temp_c": "Landsat temperatura superficie",
     "dias_descanso": "Días de descanso", "mes": "Mes",
+    "s2_dias_antes": "Edad de la imagen óptica (días)", "s1_dias_antes": "Edad del radar (días)",
+    "l_dias_antes": "Edad de Landsat (días)",
 }
 
 
@@ -81,9 +83,10 @@ def main(slug):
     cols = sorted({k for r in filas for k in r})
     num = lambda v: float(v) if v not in (None, "") else np.nan
 
-    s2 = [c for c in cols if c.startswith("s2_") and c not in ("s2_dias_antes", "s2_pixeles")]
-    s1 = [c for c in cols if c.startswith("s1_") and c != "s1_dias_antes"]
-    ls = [c for c in cols if c.startswith("l_") and c != "l_dias_antes"]
+    # Incluye la edad de cada dato (x_dias_antes): el modelo aprende a proyectar desde el último paso del satélite.
+    s2 = [c for c in cols if c.startswith("s2_") and c != "s2_pixeles"]
+    s1 = [c for c in cols if c.startswith("s1_")]
+    ls = [c for c in cols if c.startswith("l_")]
     met = [c for c in cols if c.split("_")[0] in ("lluvia", "temp", "et0", "radiacion") or c == "helada_30d"]
     man = ["dias_descanso", "mes"]
     tiene = lambda r, fuente: r.get(f"{fuente}_dias_antes") not in (None, "")
@@ -98,6 +101,23 @@ def main(slug):
     ]
     salida = {"finca": aforo.FINCA, "generado": dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes"),
               "corte": CORTE, "aforos": len(filas), "modelos": [], "importancia": {}, "dispersion": {}}
+    # Correlación de cada variable con el aforo (Spearman: por rangos, sirve aunque la relación no sea recta).
+    def rangos(a):
+        o = np.argsort(a)
+        r = np.empty(len(a))
+        r[o] = np.arange(len(a))
+        return r
+    corr = []
+    for v in sorted(set(s2 + s1 + ls + met + man)):
+        par = [(num(r.get(v)), float(r["aforo_kg_fv_m2"])) for r in filas if r.get(v) not in (None, "")]
+        par = [(a, b) for a, b in par if np.isfinite(a)]
+        if len(par) >= 50:
+            a, b = np.array(par).T
+            rho = float(np.corrcoef(rangos(a), rangos(b))[0, 1])
+            if np.isfinite(rho):
+                corr.append({"var": v, "nombre": nombre(v), "rho": round(rho, 3), "n": len(par)})
+    salida["correlaciones"] = sorted(corr, key=lambda c: -abs(c["rho"]))[:30]
+
     for clave, titulo, vars_, req in grupos:
         datos = [r for r in filas if tiene(r, req)]
         X = np.array([[num(r.get(v)) for v in vars_] for r in datos])

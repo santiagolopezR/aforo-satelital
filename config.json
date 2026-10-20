@@ -90,7 +90,8 @@
         "recorte_borde_m": 5,
         "especie_por_defecto": "kikuyo",
         "dias_par_antes": 5,
-        "dias_par_despues": 0
+        "dias_par_despues": 0,
+        "dias_historico_antes": 20
       }
     }
   }

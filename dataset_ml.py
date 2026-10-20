@@ -33,7 +33,10 @@ import aforo
 
 log = aforo.log
 BANDAS_S2 = ["B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B11", "B12"]
-VENTANA = {"s2": 5, "s1": 12, "l": 8}   # días antes del aforo en que se busca cada sensor
+# Días antes del aforo en que se busca el último dato de cada sensor. El modelo recibe también la edad del
+# dato (s2_dias_antes, etc.) y aprende cuánto creerle a un dato viejo: así se puede estimar el aforo de hoy
+# con lo último que haya pasado de cada satélite.
+VENTANA = {"s2": 20, "s1": 12, "l": 16}
 
 
 def _indices(b):

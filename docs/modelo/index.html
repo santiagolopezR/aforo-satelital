@@ -73,7 +73,12 @@
   <svg id="gDisp" width="100%"></svg>
   <div class="nota">Cada punto es un aforo de 2025–2026. Sobre la línea diagonal, el modelo acertó exacto.</div>
 
-  <h2>Qué variables pesan más</h2>
+  <h2>Correlación de cada variable con el aforo</h2>
+  <div class="sub">De −1 a 1: positivo = cuando sube la variable sube el aforo; cerca de 0 = no tiene relación.
+    Es una relación simple, una por una; el modelo además combina varias a la vez.</div>
+  <div class="tabla" id="corr"></div>
+
+  <h2>Qué variables pesan más en el modelo</h2>
   <svg id="gImp" width="100%"></svg>
   <div class="nota">Cuánto empeora el R² de la prueba si se revuelve esa variable (permutación). Más largo = más importante.</div>
 </div></div>
@@ -136,6 +141,12 @@ function importancia(clave) {
   }).join("");
 }
 
+function correlaciones() {
+  const c = datos.correlaciones || [];
+  document.getElementById("corr").innerHTML = c.length ? `<table><tr><th>Variable</th><th>Correlación</th><th>Aforos</th></tr>
+    ${c.map(v => `<tr><td>${esc(v.nombre)}</td><td>${fmt(v.rho)}</td><td>${v.n}</td></tr>`).join("")}</table>` : "";
+}
+
 function dibujar() {
   const c = document.getElementById("selModelo").value;
   dispersion(c); importancia(c);
@@ -156,6 +167,7 @@ fetch("../fincas.json", { cache: "no-store" }).then(r => r.json()).then(async fi
     [con("radar").toLocaleString("es-CO"), "con radar (todo clima)"],
   ].map(([n, l]) => `<div class="tile"><div class="n">${n}</div><div class="l">${l}</div></div>`).join("");
   tabla();
+  correlaciones();
   const opciones = [["optico_manejo", "Óptico + radar + Landsat + clima + manejo"], ["optico", "Óptico + radar + Landsat + clima"], ["radar", "Solo radar + clima"]]
     .filter(([k]) => datos.dispersion[k]);
   const sm = document.getElementById("selModelo");
