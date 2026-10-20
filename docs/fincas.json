@@ -1,0 +1,12 @@
+[
+ {
+  "id": "la_holanda",
+  "nombre": "La Holanda (Puerto Parra)",
+  "base": ""
+ },
+ {
+  "id": "altos_de_medina",
+  "nombre": "Altos de Medina",
+  "base": "altos_de_medina/"
+ }
+]
