@@ -1,0 +1,60 @@
+name: Historico para calibrar
+
+on:
+  workflow_dispatch:
+    inputs:
+      finca:
+        description: "Finca (id de config.json, p. ej. altos_de_medina)"
+        default: "altos_de_medina"
+  schedule:
+    - cron: "40 */6 * * *"   # sigue donde quedó hasta terminar; luego solo revisa que no falte nada
+  push:
+    paths:
+      - "historico.py"
+      - ".github/workflows/historico.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: aforo
+  cancel-in-progress: false
+
+jobs:
+  historico:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Mapa al día (crea la máscara de árboles si falta)
+        run: python aforo.py
+      - name: Imágenes viejas de las fechas de aforo
+        run: python historico.py "$FINCA" 200
+        env:
+          FINCA: ${{ github.event.inputs.finca || 'altos_de_medina' }}
+      - name: Recalibrar con todo
+        run: python aforo.py
+      - name: Guardar resultados
+        run: |
+          git config user.name "aforo-bot"
+          git config user.email "aforo-bot@users.noreply.github.com"
+          guardar() {
+            git add data docs exclusiones aforos_campo pastoreos
+            if git diff --cached --quiet; then echo "Sin cambios"; return 0; fi
+            git commit -m "Histórico para calibrar $(date -u +%Y-%m-%d)"
+          }
+          guardar
+          for intento in 1 2 3; do
+            git fetch origin main
+            if git rebase origin/main && git push origin HEAD:main; then exit 0; fi
+            git rebase --abort 2>/dev/null || true
+            git reset --hard origin/main
+            python aforo.py
+            guardar
+          done
+          exit 1

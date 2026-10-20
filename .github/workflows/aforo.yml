@@ -49,7 +49,7 @@ jobs:
           git config user.name "aforo-bot"
           git config user.email "aforo-bot@users.noreply.github.com"
           guardar() {
-            git add data docs/datos.json docs/pixeles docs/arboles.kmz aforos_campo exclusiones pastoreos
+            git add data docs exclusiones aforos_campo pastoreos
             if git diff --cached --quiet; then echo "Sin cambios"; return 0; fi
             git commit -m "Aforo $(date -u +%Y-%m-%d)"
           }

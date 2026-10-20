@@ -64,9 +64,9 @@
 </head>
 <body>
 <header>
-  <h1>Aforo satelital de potreros</h1>
+  <h1>Aforo satelital de potreros <select id="selFinca" style="font:inherit;font-size:16px;margin-left:6px"></select></h1>
   <div class="sub" id="actualizado">Cargando…</div>
-  <div class="sub"><a href="arboles.kmz" download style="color:var(--acento)">Descargar árboles detectados para Google Earth (KMZ)</a></div>
+  <div class="sub"><a id="enlaceKmz" href="arboles.kmz" download style="color:var(--acento)">Descargar árboles detectados para Google Earth (KMZ)</a></div>
   <div class="sub"><a href="ensayo/" style="color:var(--acento)">Ensayo: cómo sube y baja cada potrero (5 meses)</a></div>
 </header>
 <div class="aviso" id="aviso">Modelo provisional <b>sin calibrar</b> (Sentinel-2, NDVI). Los kilos son orientativos hasta cargar aforos de campo.</div>
@@ -78,6 +78,9 @@
   </div>
 </main>
 <script>
+// Finca elegida (?finca=...). Cada finca tiene sus datos en su carpeta; La Holanda en la raíz.
+const FINCA_ID = new URLSearchParams(location.search).get("finca") || "la_holanda";
+let BASE = "";
 const ESCALA = [[0, "#b2182b"], [0.5, "#ef8a62"], [1.0, "#fddb6d"], [1.5, "#a6d96a"], [2.5, "#4dac26"], [3.5, "#1b7837"]];
 const COLOR_ARBOL = "#00e676", COD_ARBOL = 255;
 const color = v => v == null ? "#888" : ESCALA.reduce((c, [lim, col]) => v >= lim ? col : c, ESCALA[0][1]);
@@ -118,7 +121,7 @@ async function pintarPixeles(fecha) {
   const info = indicePixeles[fecha];
   if (!detalleOn || !info) return;
   const img = new Image();
-  img.src = `pixeles/${fecha}.png`;
+  img.src = `${BASE}pixeles/${fecha}.png`;
   await img.decode();
   if (turno !== turnoPixeles) return;
   const cv = document.createElement("canvas");
@@ -327,10 +330,19 @@ function mostrar(nombre) {
   actualizarProyeccion(p);
 }
 
-Promise.all([
-  fetch("datos.json", { cache: "no-store" }).then(r => r.json()),
-  fetch("pixeles/indice.json", { cache: "no-store" }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
-]).then(([datos, indice]) => {
+fetch("fincas.json", { cache: "no-store" }).then(r => r.ok ? r.json() : []).catch(() => []).then(fincas => {
+  const sel = document.getElementById("selFinca");
+  if (!fincas.length) fincas = [{ id: "la_holanda", nombre: "La Holanda", base: "" }];
+  sel.innerHTML = fincas.map(f => `<option value="${f.id}">${esc(f.nombre)}</option>`).join("");
+  const f = fincas.find(x => x.id === FINCA_ID) || fincas[0];
+  sel.value = f.id; BASE = f.base;
+  sel.addEventListener("change", () => { location.search = "?finca=" + sel.value; });
+  document.getElementById("enlaceKmz").href = BASE + "arboles.kmz";
+  return Promise.all([
+    fetch(BASE + "datos.json", { cache: "no-store" }).then(r => r.json()),
+    fetch(BASE + "pixeles/indice.json", { cache: "no-store" }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
+  ]);
+}).then(([datos, indice]) => {
   datosGlobal = datos;
   indicePixeles = indice;
   const act = new Date(datos.actualizado);

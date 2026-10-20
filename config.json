@@ -62,5 +62,36 @@
     "min_pares_curva": 10,
     "tolerancia_entrada_vencida": 7,
     "consumo_pastoreo": 0.33
+  },
+  "min_aforos_ajustar_b": 50,
+  "min_despejado_calibrar": 0.8,
+  "fincas": {
+    "la_holanda": {
+      "nombre": "La Holanda (Puerto Parra)",
+      "potreros": "potreros",
+      "datos": "data",
+      "web": "docs",
+      "exclusiones": "exclusiones",
+      "aforos": [
+        "aforos_campo/aforos.csv"
+      ]
+    },
+    "altos_de_medina": {
+      "nombre": "Altos de Medina",
+      "potreros": "potreros/altos_de_medina",
+      "datos": "data/altos_de_medina",
+      "web": "docs/altos_de_medina",
+      "exclusiones": "exclusiones/altos_de_medina",
+      "aforos": [
+        "aforos_campo/aforos.csv",
+        "aforos_campo/altos_de_medina_platometro.csv"
+      ],
+      "ajustes": {
+        "recorte_borde_m": 5,
+        "especie_por_defecto": "kikuyo",
+        "dias_par_antes": 5,
+        "dias_par_despues": 0
+      }
+    }
   }
 }

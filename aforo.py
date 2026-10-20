@@ -56,6 +56,32 @@ CARPETA_EXCLUSIONES = RAIZ / "exclusiones"
 MASCARA_ARBOLES = CARPETA_EXCLUSIONES / "arboles.tif"         # la que se usa (Meta + ortomosaicos de dron)
 MASCARA_META = CARPETA_EXCLUSIONES / "arboles_meta.tif"       # solo alturas de Meta, base y respaldo
 KMZ_ARBOLES = RAIZ / "docs" / "arboles.kmz"
+HISTORIAL_LARGO = RAIZ / "data" / "historial_largo.csv"   # imágenes viejas traídas para calibrar (historico.py)
+ARCHIVOS_AFOROS = [RAIZ / "aforos_campo" / "aforos.csv"]
+FINCA = {"id": "la_holanda", "nombre": "La Holanda"}
+
+
+def usar_finca(slug, f):
+    """Apunta todas las rutas a la carpeta de una finca (La Holanda usa las rutas de siempre)."""
+    global CARPETA_POTREROS, HISTORIAL, SALIDA_WEB, CARPETA_PIXELES, CARPETA_EXCLUSIONES, MASCARA_ARBOLES
+    global MASCARA_META, KMZ_ARBOLES, CALIBRACION, HISTORIAL_LARGO, ARCHIVOS_AFOROS, FINCA
+    datos, web, exc = RAIZ / f["datos"], RAIZ / f["web"], RAIZ / f["exclusiones"]
+    CARPETA_POTREROS = RAIZ / f["potreros"]
+    HISTORIAL, CALIBRACION, HISTORIAL_LARGO = datos / "historial.csv", datos / "calibracion.csv", datos / "historial_largo.csv"
+    SALIDA_WEB, CARPETA_PIXELES, KMZ_ARBOLES = web / "datos.json", web / "pixeles", web / "arboles.kmz"
+    CARPETA_EXCLUSIONES = exc
+    MASCARA_ARBOLES, MASCARA_META = exc / "arboles.tif", exc / "arboles_meta.tif"
+    ARCHIVOS_AFOROS = [RAIZ / a for a in f["aforos"]]
+    FINCA = {"id": slug, "nombre": f["nombre"]}
+
+
+def config_de_finca(config, f):
+    """Configuración general con los ajustes propios de la finca encima."""
+    import copy
+    c = copy.deepcopy(config)
+    for k, v in f.get("ajustes", {}).items():
+        c[k] = v
+    return c
 # Alturas de árboles de Meta / World Resources Institute (1 m, gratis), en cuadros "quadkey" de nivel 9.
 URL_ALTURAS = "https://dataforgood-fb-data.s3.amazonaws.com/forests/v1/alsgedi_global_v6_float/chm/{}.tif"
 COD_ARBOL = 255  # código del píxel excluido en la imagen del mapa de detalle
@@ -442,11 +468,17 @@ def _clave(t):
 
 
 def leer_aforos(potreros):
-    if not AFOROS.exists():
-        return []
     por_clave = {_clave(p["nombre"]): p["nombre"] for p in potreros}
     salida = []
-    with AFOROS.open(encoding="utf-8-sig") as f:
+    for ruta in ARCHIVOS_AFOROS:
+        if ruta.exists():
+            salida += _leer_aforos_archivo(ruta, por_clave)
+    return salida
+
+
+def _leer_aforos_archivo(ruta, por_clave):
+    salida = []
+    with ruta.open(encoding="utf-8-sig") as f:
         for r in csv.DictReader(f):
             try:
                 r["kg_fv_m2"] = float(str(r["kg_fv_m2"]).replace(",", "."))
@@ -562,34 +594,94 @@ def emparejar(aforos, filas, config):
     for r in filas:
         if r["sensor"] == "S2" and r.get("hist"):
             s2.setdefault(r["potrero"], []).append(r)
+    # Ventana: imágenes hasta 'antes' días antes del aforo y hasta 'despues' días después
+    # (en Altos de Medina el platómetro se toma al entrar las vacas: después ya está comido).
+    antes = config.get("dias_par_antes", config["dias_par_aforo_imagen"])
+    despues = config.get("dias_par_despues", config["dias_par_aforo_imagen"])
     pares = []
     for a in aforos:
         fa = dt.date.fromisoformat(a["fecha"])
-        cands = [(abs((dt.date.fromisoformat(r["fecha"]) - fa).days), r) for r in s2.get(a["potrero"], [])]
-        cands = [c for c in cands if c[0] <= config["dias_par_aforo_imagen"]]
+        cands = [((fa - dt.date.fromisoformat(r["fecha"])).days, r) for r in s2.get(a["potrero"], [])
+                 if float(r["pct_valido"]) >= config.get("min_despejado_calibrar", 0.8)]
+        cands = [c for c in cands if -despues <= c[0] <= antes]
         if cands:
-            d, r = min(cands, key=lambda c: c[0])
+            d, r = min(cands, key=lambda c: abs(c[0]))
             pares.append({"aforo": a, "obs": r, "dias": d})
     return pares
 
 
+def _forma_por_pixel(hist, b, config):
+    """Promedio de (e^(b·(NDVI−suelo)) − 1) sobre los píxeles del potrero."""
+    tot = acum = 0
+    for par in hist.split():
+        i, c = (int(v) for v in par.split(":"))
+        acum += c * max(0.0, math.exp(b * (HIST_MIN + (i + 0.5) * HIST_PASO - config["ndvi_suelo"])) - 1)
+        tot += c
+    return acum / tot if tot else 0.0
+
+
+def _ajustar_k(ys, fs):
+    den = sum(f * f for f in fs)
+    return sum(y * f for y, f in zip(ys, fs)) / den if den else None
+
+
+def _metricas(obs, pred):
+    n = len(obs)
+    media = sum(obs) / n
+    sse = sum((o - q) ** 2 for o, q in zip(obs, pred))
+    sst = sum((o - media) ** 2 for o in obs) or 1e-9
+    return {"n": n, "r2": round(1 - sse / sst, 3), "rmse": round(math.sqrt(sse / n), 3),
+            "mae_pct": round(100 * sum(abs(o - q) / o for o, q in zip(obs, pred) if o > 0) / n, 1),
+            "sesgo": round(sum(q - o for o, q in zip(obs, pred)) / n, 3),
+            "rmse_media": round(math.sqrt(sst / n), 3)}
+
+
 def calibrar(pares, especie_de, config):
-    """Con suficientes aforos por especie recalcula k (y pct_ms si hay datos). Devuelve un resumen."""
+    """
+    Con suficientes aforos por especie recalcula la curva NDVI -> kg usando todos los píxeles de cada potrero:
+      - siempre k (escala) y %MS si se anotó;
+      - con muchos aforos también b (forma), buscando el que menos error deja.
+    El error se mide con validación cruzada (5 grupos): cada aforo se predice con un modelo que no lo vio.
+    """
+    import random
     resumen = {}
     for esp, p in config["especies"].items():
-        mios = [x for x in pares if especie_de[x["aforo"]["potrero"]] == esp]
+        mios = [x for x in pares if especie_de[x["aforo"]["potrero"]] == esp and x["obs"].get("hist")]
         pcts = [x["aforo"]["pct_ms"] for x in mios if x["aforo"]["pct_ms"]]
         info = {"aforos": len(mios), "calibrada": False}
         if len(mios) >= config["min_aforos_calibrar"]:
             if len(pcts) >= 5:
                 p["pct_ms"] = round(sum(pcts) / len(pcts), 3)
-            ys = [x["aforo"]["kg_fv_m2"] * 10000 * (x["aforo"]["pct_ms"] or p["pct_ms"]) for x in mios]
-            fs = [forma_curva(float(x["obs"]["ndvi"]), p, config) for x in mios]
-            den = sum(f * f for f in fs)
-            if den > 0:
-                p["k"] = round(sum(y * f for y, f in zip(ys, fs)) / den, 1)
+            obs = [x["aforo"]["kg_fv_m2"] for x in mios]
+            ys = [o * 10000 * p["pct_ms"] for o in obs]  # aforo pasado a kg MS/ha con el %MS de la especie
+            bs = [p["b"]] if len(mios) < config.get("min_aforos_ajustar_b", 50) else [x / 10 for x in range(5, 121, 5)]
+            mejor = None
+            for b in bs:
+                fs = [_forma_por_pixel(x["obs"]["hist"], b, config) for x in mios]
+                k = _ajustar_k(ys, fs)
+                if not k:
+                    continue
+                sse = sum((y - k * f) ** 2 for y, f in zip(ys, fs))
+                if mejor is None or sse < mejor[0]:
+                    mejor = (sse, b, k, fs)
+            if mejor:
+                _, b, k, fs = mejor
+                a_fv = lambda kk, f: min(kk * f, p["max_kg_ms_ha"]) / p["pct_ms"] / 10000
+                info["antes"] = _metricas(obs, [estimar_por_pixel(x["obs"]["hist"], esp, config)[1] for x in mios])
+                p["k"], p["b"] = round(k, 1), b
+                info["ajuste"] = _metricas(obs, [a_fv(k, f) for f in fs])
+                # Validación cruzada: k ajustado sin el grupo que se predice (b queda fijo).
+                idx = list(range(len(mios)))
+                random.Random(0).shuffle(idx)
+                pred = [None] * len(mios)
+                for g in range(5):
+                    prueba = set(idx[g::5])
+                    kk = _ajustar_k([ys[i] for i in idx if i not in prueba], [fs[i] for i in idx if i not in prueba])
+                    for i in prueba:
+                        pred[i] = a_fv(kk or k, fs[i])
+                info["validacion"] = _metricas(obs, pred)
                 info["calibrada"] = True
-        info.update(k=p["k"], pct_ms=p["pct_ms"])
+        info.update(k=p["k"], b=p["b"], pct_ms=p["pct_ms"])
         resumen[esp] = info
     return resumen
 
@@ -603,7 +695,7 @@ def guardar_calibracion(pares, config, especie_de):
         for x in sorted(pares, key=lambda x: (x["aforo"]["fecha"], x["aforo"]["potrero"])):
             a, o = x["aforo"], x["obs"]
             esp = especie_de[a["potrero"]]
-            sat = estimar(float(o["ndvi"]), esp, config)[1]
+            sat = estimar_por_pixel(o["hist"], esp, config)[1] if o.get("hist") else estimar(float(o["ndvi"]), esp, config)[1]
             err = round((sat - a["kg_fv_m2"]) / a["kg_fv_m2"] * 100) if a["kg_fv_m2"] else ""
             w.writerow([a["fecha"], a["potrero"], esp, a["kg_fv_m2"], o["fecha"], o["ndvi"], sat, err])
 
@@ -811,8 +903,11 @@ def cerrar_issues():
     token, repo = os.environ.get("GITHUB_TOKEN"), os.environ.get("GITHUB_REPOSITORY")
     datos = json.loads(ISSUES_A_CERRAR.read_text(encoding="utf-8"))
     cab = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
-    web = json.loads(SALIDA_WEB.read_text(encoding="utf-8")) if SALIDA_WEB.exists() else {"features": []}
-    sat = {f["properties"]["nombre"]: f["properties"] for f in web["features"]}
+    sat = {}
+    for ruta in [RAIZ / "docs" / "datos.json", *RAIZ.glob("docs/*/datos.json")]:
+        if ruta.exists():
+            sat.update({f["properties"]["nombre"]: f["properties"]
+                        for f in json.loads(ruta.read_text(encoding="utf-8"))["features"]})
     for x in datos:
         texto = x.get("texto")
         if not texto:
@@ -1109,6 +1204,7 @@ def exportar_web(potreros, filas, config, aforos=(), calibracion=None, pastoreos
     SALIDA_WEB.parent.mkdir(parents=True, exist_ok=True)
     SALIDA_WEB.write_text(json.dumps({
         "actualizado": dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes"),
+        "finca": FINCA,
         "modelo": ("calibrado con aforos: " + ", ".join(calibradas)) if calibradas else "provisional sin calibrar",
         "calibracion": calibracion or {},
         "aforos_total": len(aforos),
@@ -1124,8 +1220,35 @@ def exportar_web(potreros, filas, config, aforos=(), calibracion=None, pastoreos
 
 # ---------------------------------------------------------------- principal
 
+def fincas_de(config):
+    return config.get("fincas") or {"la_holanda": {"nombre": "La Holanda", "potreros": "potreros", "datos": "data",
+                                                    "web": "docs", "exclusiones": "exclusiones",
+                                                    "aforos": ["aforos_campo/aforos.csv"]}}
+
+
 def main():
-    config = json.loads((RAIZ / "config.json").read_text(encoding="utf-8"))
+    config_base = json.loads((RAIZ / "config.json").read_text(encoding="utf-8"))
+    fincas = fincas_de(config_base)
+    # Los formularios de GitHub pueden ser de cualquier finca: se leen con todos los potreros juntos.
+    todos = []
+    for slug, f in fincas.items():
+        usar_finca(slug, f)
+        todos += cargar_potreros(config_de_finca(config_base, f))
+    try:
+        importar_issues(todos)
+    except Exception as e:
+        log(f"  ! No se pudieron leer los formularios de GitHub: {e}")
+    lista = []
+    for slug, f in fincas.items():
+        log(f"========== {f['nombre']} ==========")
+        usar_finca(slug, f)
+        procesar_finca(config_de_finca(config_base, f))
+        lista.append({"id": slug, "nombre": f["nombre"],
+                      "base": "" if f["web"] == "docs" else f["web"][len("docs/"):] + "/"})
+    (RAIZ / "docs" / "fincas.json").write_text(json.dumps(lista, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def procesar_finca(config):
     potreros = cargar_potreros(config)
     if not potreros:
         log("No hay potreros en la carpeta potreros/. Sube un .geojson, .kml o .kmz.")
@@ -1212,14 +1335,14 @@ def main():
             mejor[k] = r
     filas = list(mejor.values())
 
-    # Aforos de campo: los formularios nuevos de GitHub pasan a aforos.csv y se recalibra por especie.
+    # Aforos de campo: se emparejan con las imágenes recientes y con las viejas traídas por historico.py.
     especie_de = {p["nombre"]: p["especie"] for p in potreros}
-    try:
-        importar_issues(potreros)
-    except Exception as e:
-        log(f"  ! No se pudieron leer los aforos de GitHub: {e}")
     aforos = leer_aforos(potreros)
-    pares = emparejar(aforos, filas, config)
+    largo = []
+    if HISTORIAL_LARGO.exists():
+        with HISTORIAL_LARGO.open(encoding="utf-8") as fh:
+            largo = [r for r in csv.DictReader(fh) if r["potrero"] in nombres]
+    pares = emparejar(aforos, filas + largo, config)
     calibracion = calibrar(pares, especie_de, config)
     log(f"Aforos de campo: {len(aforos)} ({len(pares)} con imagen cercana). "
         + ", ".join(f"{e}: {c['aforos']}{' calibrada' if c['calibrada'] else ''}" for e, c in calibracion.items()))

@@ -106,6 +106,24 @@ python arboles_dron.py "D:/MAPA Puerto parra Claude/03_ortomosaicos"
 
 y subir `exclusiones/arboles.tif` y `docs/arboles.kmz`. El resto se recalcula solo.
 
+## Varias fincas
+Cada finca se define en `config.json` → `fincas` (carpeta de potreros, de datos, de la página, de exclusiones,
+archivos de aforos y ajustes propios). En el mapa se cambia con el selector junto al título (`?finca=...`).
+
+| Finca | Potreros | Pasto | Notas |
+|---|---|---|---|
+| La Holanda (Puerto Parra) | `potreros/` | humidícola, decumbens | rutas de siempre (`data/`, `docs/`, `exclusiones/`) |
+| Altos de Medina | `potreros/altos_de_medina/` | kikuyo | franjas pequeñas: recorte de borde de 5 m |
+
+## Calibración con aforos históricos (Altos de Medina)
+`aforos_campo/altos_de_medina_platometro.csv`: 5.054 aforos de platómetro (nov 2022 – ago 2026), 4.792 cruzan con un potrero.
+El platómetro se toma al entrar las vacas, así que cada aforo se empareja con la imagen despejada (≥ 80 %)
+**de ese día o hasta 5 días antes**, nunca después.
+
+`historico.py` trae las imágenes Sentinel-2 viejas de esas fechas (workflow "Historico para calibrar", corre cada 6 h
+hasta terminar; es incremental). Con eso `aforo.py` ajusta la curva del kikuyo (escala `k` y forma `b`) y mide el error
+con validación cruzada: `data/altos_de_medina/calibracion.csv` y el bloque `calibracion` de su `datos.json`.
+
 ## Limitaciones
 - El píxel es de 10 m: potreros de menos de ~0,3 ha dan datos pobres.
 - Con muchas semanas nubladas, el dato queda viejo (el tablero avisa si tiene más de 10 días).
