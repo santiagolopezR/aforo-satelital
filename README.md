@@ -124,6 +124,15 @@ El platómetro se toma al entrar las vacas, así que cada aforo se empareja con 
 hasta terminar; es incremental). Con eso `aforo.py` ajusta la curva del kikuyo (escala `k` y forma `b`) y mide el error
 con validación cruzada: `data/altos_de_medina/calibracion.csv` y el bloque `calibracion` de su `datos.json`.
 
+## Modelo de machine learning
+`dataset_ml.py` arma una fila por aforo con lo medido antes de él: Sentinel-2 (10 bandas y 12 índices, con percentiles),
+Sentinel-1 radar (VV, VH, VH−VV, RVI), Landsat 8/9 (incluida la temperatura de superficie), clima diario
+(Open-Meteo/ERA5: lluvia, temperatura, evapotranspiración, radiación) y manejo (días de descanso, mes).
+`entrenar_ml.py` entrena modelos (gradient boosting) con los aforos hasta 2024 y los prueba con 2025–2026;
+también deja potreros completos por fuera. Compara: solo NDVI, todas las bandas, + radar/Landsat/clima, + manejo,
+solo radar (días nublados) y un control sin satélite. Resultados en la página `docs/modelo/` (R², error, real vs estimado
+y qué variables pesan más). Todo corre en el workflow "Historico para calibrar".
+
 ## Limitaciones
 - El píxel es de 10 m: potreros de menos de ~0,3 ha dan datos pobres.
 - Con muchas semanas nubladas, el dato queda viejo (el tablero avisa si tiene más de 10 días).

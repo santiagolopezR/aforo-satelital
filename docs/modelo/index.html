@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Modelo de aforo</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --surface-1: #fcfcfb; --surface-2: #f3f2ee; --borde: #e2e0da;
+    --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #77756f;
+    --grid: #e9e7e1; --series-1: #2a78d6; --series-2: #eb6834;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --surface-1: #1a1a19; --surface-2: #232321; --borde: #34332f;
+      --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #96958c;
+      --grid: #2c2b28; --series-1: #3987e5; --series-2: #d95926;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --surface-1: #1a1a19; --surface-2: #232321; --borde: #34332f;
+    --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #96958c;
+    --grid: #2c2b28; --series-1: #3987e5; --series-2: #d95926;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  .viz-root { min-height: 100vh; background: var(--surface-1); color: var(--text-primary);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; padding: 16px; }
+  .ancho { max-width: 980px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 2px; }
+  h2 { font-size: 15px; margin: 22px 0 6px; }
+  .sub { color: var(--text-secondary); font-size: 13px; }
+  select { font: inherit; background: var(--surface-2); color: var(--text-primary); border: 1px solid var(--borde); border-radius: 6px; padding: 4px 8px; }
+  .filtros { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0; }
+  .resumen { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0; }
+  .tile { background: var(--surface-2); border-radius: 10px; padding: 8px 14px; min-width: 150px; }
+  .tile .n { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .tile .l { font-size: 12px; color: var(--text-secondary); }
+  table { border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; width: 100%; }
+  th, td { text-align: right; padding: 5px 6px; border-bottom: 1px solid var(--borde); }
+  th:first-child, td:first-child { text-align: left; }
+  tr.mejor td { font-weight: 700; }
+  .tabla { overflow-x: auto; }
+  svg text { fill: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  #tip { position: fixed; pointer-events: none; background: var(--surface-2); border: 1px solid var(--borde);
+    border-radius: 8px; padding: 6px 9px; font-size: 12px; display: none; z-index: 5; }
+  .nota { font-size: 12px; color: var(--text-muted); margin-top: 8px; }
+  a { color: var(--series-1); }
+</style>
+</head>
+<body>
+<div class="viz-root"><div class="ancho">
+  <h1>Modelo de aforo con machine learning</h1>
+  <div class="sub" id="sub">Cargando…</div>
+  <div class="filtros">
+    <label>Finca <select id="selFinca"></select></label>
+    <a href="../">← volver al mapa</a>
+  </div>
+  <div class="resumen" id="resumen"></div>
+
+  <h2>¿Qué tan bien estima cada combinación de datos?</h2>
+  <div class="sub">Se entrena con los aforos hasta 2024 y se prueba con los de 2025–2026, que el modelo no vio.
+    R² = qué parte de la variación del aforo explica (1 = perfecto, 0 = igual que usar el promedio).</div>
+  <div class="tabla" id="tabla"></div>
+
+  <div class="filtros">
+    <label>Modelo para los gráficos <select id="selModelo"></select></label>
+  </div>
+  <h2>Aforo real vs. estimado (prueba 2025–2026)</h2>
+  <svg id="gDisp" width="100%"></svg>
+  <div class="nota">Cada punto es un aforo de 2025–2026. Sobre la línea diagonal, el modelo acertó exacto.</div>
+
+  <h2>Qué variables pesan más</h2>
+  <svg id="gImp" width="100%"></svg>
+  <div class="nota">Cuánto empeora el R² de la prueba si se revuelve esa variable (permutación). Más largo = más importante.</div>
+</div></div>
+<div id="tip"></div>
+<script>
+const fmt = (v, d = 2) => v == null || isNaN(v) ? "—" : Number(v).toLocaleString("es-CO", { minimumFractionDigits: d, maximumFractionDigits: d });
+const esc = t => String(t).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const FINCA_ID = new URLSearchParams(location.search).get("finca") || "altos_de_medina";
+let datos = null;
+
+function tabla() {
+  const filas = datos.modelos.filter(m => m.prueba_2025_2026);
+  const mejor = filas.reduce((b, m) => !b || m.prueba_2025_2026.r2 > b.prueba_2025_2026.r2 ? m : b, null);
+  document.getElementById("tabla").innerHTML = `<table><tr><th>Datos usados</th><th>Aforos prueba</th><th>R² prueba</th>
+    <th>Error típico (kg)</th><th>Error medio %</th><th>Sesgo (kg)</th><th>R² potreros no vistos</th><th>R² usando el promedio</th></tr>
+    ${datos.modelos.map(m => m.prueba_2025_2026 ? `<tr class="${m === mejor ? "mejor" : ""}"><td>${esc(m.titulo)}</td><td>${m.prueba}</td>
+      <td>${fmt(m.prueba_2025_2026.r2)}</td><td>${fmt(m.prueba_2025_2026.rmse)}</td><td>${fmt(m.prueba_2025_2026.mae_pct, 0)} %</td>
+      <td>${fmt(m.prueba_2025_2026.sesgo)}</td><td>${fmt(m.potreros_no_vistos.r2)}</td><td>${fmt(m.promedio_como_estimacion.r2)}</td></tr>`
+      : `<tr><td>${esc(m.titulo)}</td><td colspan="7" style="text-align:left">${esc(m.nota || "")} (${m.filas} aforos)</td></tr>`).join("")}</table>`;
+}
+
+function dispersion(clave) {
+  const pts = datos.dispersion[clave] || [], svg = document.getElementById("gDisp");
+  const W = svg.clientWidth || 900, H = 360, m = { l: 46, r: 14, t: 10, b: 36 };
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.setAttribute("height", H);
+  if (!pts.length) { svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle">Sin datos para este modelo</text>`; return; }
+  const max = Math.ceil(Math.max(...pts.map(p => Math.max(p.real, p.est))) * 2) / 2;
+  const x = v => m.l + v / max * (W - m.l - m.r), y = v => H - m.b - v / max * (H - m.t - m.b);
+  let s = "";
+  for (let v = 0; v <= max + 1e-9; v += 0.5)
+    s += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)"/><text x="${m.l - 6}" y="${y(v) + 4}" text-anchor="end">${fmt(v, 1)}</text>
+      <text x="${x(v)}" y="${H - m.b + 16}" text-anchor="middle">${fmt(v, 1)}</text>`;
+  s += `<text x="${(W + m.l) / 2}" y="${H - 4}" text-anchor="middle">Aforo real con platómetro (kg FV/m²)</text>
+    <text transform="translate(12 ${H / 2}) rotate(-90)" text-anchor="middle">Estimado por satélite</text>
+    <line x1="${x(0)}" y1="${y(0)}" x2="${x(max)}" y2="${y(max)}" stroke="var(--text-muted)" stroke-dasharray="4 3"/>`;
+  s += pts.map((p, i) => `<circle data-i="${i}" cx="${x(p.real)}" cy="${y(p.est)}" r="4.5" fill="var(--series-1)" fill-opacity=".55" stroke="var(--surface-1)" stroke-width="1"/>`).join("");
+  svg.innerHTML = s;
+  const tip = document.getElementById("tip");
+  svg.onpointermove = ev => {
+    const c = ev.target.closest("circle");
+    if (!c) { tip.style.display = "none"; return; }
+    const p = pts[+c.dataset.i];
+    tip.innerHTML = `<b>${esc(p.p)}</b> · ${p.f}<br>Real ${fmt(p.real)} · estimado ${fmt(p.est)} kg FV/m²`;
+    tip.style.display = "block"; tip.style.left = (ev.clientX + 12) + "px"; tip.style.top = (ev.clientY + 12) + "px";
+  };
+  svg.onpointerleave = () => { tip.style.display = "none"; };
+}
+
+function importancia(clave) {
+  const imp = (datos.importancia[clave] || []).filter(v => v.valor > 0), svg = document.getElementById("gImp");
+  const W = svg.clientWidth || 900, fila = 24, m = { l: 230, r: 50, t: 4, b: 4 }, H = Math.max(60, imp.length * fila + m.t + m.b);
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.setAttribute("height", H);
+  if (!imp.length) { svg.innerHTML = `<text x="${W / 2}" y="30" text-anchor="middle">Sin datos para este modelo</text>`; return; }
+  const max = Math.max(...imp.map(v => v.valor));
+  svg.innerHTML = imp.map((v, i) => {
+    const y = m.t + i * fila, w = v.valor / max * (W - m.l - m.r);
+    return `<text x="${m.l - 8}" y="${y + 16}" text-anchor="end" style="fill:var(--text-secondary)">${esc(v.nombre)}</text>
+      <rect x="${m.l}" y="${y + 5}" width="${Math.max(2, w)}" height="14" rx="4" fill="var(--series-1)"/>
+      <text x="${m.l + w + 6}" y="${y + 16}">${fmt(v.valor, 3)}</text>`;
+  }).join("");
+}
+
+function dibujar() {
+  const c = document.getElementById("selModelo").value;
+  dispersion(c); importancia(c);
+}
+
+fetch("../fincas.json", { cache: "no-store" }).then(r => r.json()).then(async fincas => {
+  const sel = document.getElementById("selFinca");
+  sel.innerHTML = fincas.map(f => `<option value="${f.id}">${esc(f.nombre)}</option>`).join("");
+  const f = fincas.find(x => x.id === FINCA_ID) || fincas[0];
+  sel.value = f.id;
+  sel.addEventListener("change", () => { location.search = "?finca=" + sel.value; });
+  datos = await fetch(`../${f.base}modelo_ml.json`, { cache: "no-store" }).then(r => { if (!r.ok) throw 0; return r.json(); });
+  document.getElementById("sub").textContent = `${datos.finca.nombre} · generado ${datos.generado.slice(0, 16).replace("T", " ")} UTC`;
+  const con = k => (datos.modelos.find(m => m.clave === k) || {}).filas || 0;
+  document.getElementById("resumen").innerHTML = [
+    [datos.aforos.toLocaleString("es-CO"), "aforos de campo"],
+    [con("s2").toLocaleString("es-CO"), "con imagen óptica despejada"],
+    [con("radar").toLocaleString("es-CO"), "con radar (todo clima)"],
+  ].map(([n, l]) => `<div class="tile"><div class="n">${n}</div><div class="l">${l}</div></div>`).join("");
+  tabla();
+  const opciones = [["optico_manejo", "Óptico + radar + Landsat + clima + manejo"], ["optico", "Óptico + radar + Landsat + clima"], ["radar", "Solo radar + clima"]]
+    .filter(([k]) => datos.dispersion[k]);
+  const sm = document.getElementById("selModelo");
+  sm.innerHTML = opciones.map(([k, t]) => `<option value="${k}">${t}</option>`).join("");
+  sm.addEventListener("change", dibujar);
+  dibujar();
+  addEventListener("resize", dibujar);
+}).catch(() => {
+  document.getElementById("sub").textContent = "Todavía no hay modelo entrenado para esta finca (se genera cuando termina de bajar las imágenes históricas).";
+});
+</script>
+</body>
+</html>

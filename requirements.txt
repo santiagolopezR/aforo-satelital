@@ -6,3 +6,5 @@ pystac-client>=0.8
 planetary-computer>=1.0
 truststore>=0.9
 requests>=2.31
+scikit-learn>=1.4
+joblib>=1.3

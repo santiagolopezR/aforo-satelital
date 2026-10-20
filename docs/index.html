@@ -68,6 +68,7 @@
   <div class="sub" id="actualizado">Cargando…</div>
   <div class="sub"><a id="enlaceKmz" href="arboles.kmz" download style="color:var(--acento)">Descargar árboles detectados para Google Earth (KMZ)</a></div>
   <div class="sub"><a href="ensayo/" style="color:var(--acento)">Ensayo: cómo sube y baja cada potrero (5 meses)</a></div>
+  <div class="sub"><a id="enlaceModelo" href="modelo/" style="color:var(--acento)">Modelo de machine learning: qué tan bien estima el aforo</a></div>
 </header>
 <div class="aviso" id="aviso">Modelo provisional <b>sin calibrar</b> (Sentinel-2, NDVI). Los kilos son orientativos hasta cargar aforos de campo.</div>
 <main>
@@ -338,6 +339,7 @@ fetch("fincas.json", { cache: "no-store" }).then(r => r.ok ? r.json() : []).catc
   sel.value = f.id; BASE = f.base;
   sel.addEventListener("change", () => { location.search = "?finca=" + sel.value; });
   document.getElementById("enlaceKmz").href = BASE + "arboles.kmz";
+  document.getElementById("enlaceModelo").href = "modelo/?finca=" + f.id;
   return Promise.all([
     fetch(BASE + "datos.json", { cache: "no-store" }).then(r => r.json()),
     fetch(BASE + "pixeles/indice.json", { cache: "no-store" }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
