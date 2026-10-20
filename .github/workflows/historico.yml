@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 concurrency:
   group: aforo
@@ -50,6 +51,11 @@ jobs:
         run: python entrenar_ml.py "$FINCA" 2>&1 | tee "data/$FINCA/log_entrenar_ml.txt"
       - name: Recalibrar con todo
         run: python aforo.py
+      - name: Avisar por GitHub si hay resultados nuevos del modelo
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python notificar.py "$FINCA"
       - name: Guardar resultados
         run: |
           git config user.name "aforo-bot"
@@ -62,7 +68,7 @@ jobs:
           # Lo que no se puede recalcular rápido se guarda aparte por si hay que partir de lo más nuevo.
           mkdir -p /tmp/guardado
           for a in historial_largo.csv escenas_revisadas.txt historico_estado.json dataset_ml.csv log_historico.txt \
-                   log_dataset_ml.txt log_entrenar_ml.txt; do
+                   log_dataset_ml.txt log_entrenar_ml.txt notificado.txt; do
             cp "data/$FINCA/$a" /tmp/guardado/ 2>/dev/null || true
           done
           cp data/$FINCA/ml_* data/$FINCA/modelo_*.joblib /tmp/guardado/ 2>/dev/null || true
