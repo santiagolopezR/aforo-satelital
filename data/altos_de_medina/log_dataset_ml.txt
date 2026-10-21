@@ -1,4 +1,4 @@
-Sentinel-2 (10 bandas): 422 escenas útiles, 422 por procesar
-Sentinel-1 radar: 186 escenas útiles, 186 por procesar
-Landsat: 251 escenas útiles, 251 por procesar
+Sentinel-2 (10 bandas): 422 escenas útiles, 0 por procesar
+Sentinel-1 radar: 186 escenas útiles, 0 por procesar
+Landsat: 251 escenas útiles, 0 por procesar
 Tabla: 4792 aforos | con Sentinel-2 4140 | radar 4427 | Landsat 1594 | con clima 4792
