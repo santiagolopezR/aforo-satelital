@@ -13,6 +13,7 @@ on:
       - "historico.py"
       - "dataset_ml.py"
       - "entrenar_ml.py"
+      - "modelo_v2.py"
       - ".github/workflows/historico.yml"
 
 permissions:
@@ -51,6 +52,9 @@ jobs:
       - name: Entrenar y probar modelos
         continue-on-error: true
         run: python entrenar_ml.py "$FINCA" 2>&1 | tee "data/$FINCA/log_entrenar_ml.txt"
+      - name: Modelo v2 (crecimiento + memoria + satélite, recalibración mensual)
+        continue-on-error: true
+        run: python modelo_v2.py "$FINCA" 2>&1 | tee "data/$FINCA/log_modelo_v2.txt"
       - name: Recalibrar con todo
         run: python aforo.py
       - name: Avisar por GitHub si hay resultados nuevos del modelo
@@ -74,7 +78,7 @@ jobs:
             cp "data/$FINCA/$a" /tmp/guardado/ 2>/dev/null || true
           done
           cp data/$FINCA/ml_* data/$FINCA/modelo_*.joblib /tmp/guardado/ 2>/dev/null || true
-          cp "docs/$FINCA/modelo_ml.json" /tmp/guardado/ 2>/dev/null || true
+          cp "docs/$FINCA/modelo_ml.json" "docs/$FINCA/modelo_v2.json" /tmp/guardado/ 2>/dev/null || true
           guardar
           for intento in 1 2 3; do
             git fetch origin main
@@ -83,7 +87,7 @@ jobs:
             git reset --hard origin/main
             mkdir -p "data/$FINCA" "docs/$FINCA"
             cp /tmp/guardado/* "data/$FINCA/" 2>/dev/null || true
-            mv "data/$FINCA/modelo_ml.json" "docs/$FINCA/" 2>/dev/null || true
+            mv "data/$FINCA/modelo_ml.json" "data/$FINCA/modelo_v2.json" "docs/$FINCA/" 2>/dev/null || true
             python aforo.py
             guardar
           done
