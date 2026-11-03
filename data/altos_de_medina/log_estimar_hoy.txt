@@ -1,0 +1,4 @@
+s2: 5 escenas recientes, 221 potreros con dato
+s1: 3 escenas recientes, 220 potreros con dato
+l: 2 escenas recientes, 172 potreros con dato
+Estimación de hoy: LA POSADA 1.94 kg (sin_memoria), MANGA GRANDE 1.96 kg (sin_memoria), PARAISO 1.83 kg (sin_memoria), PIONEROS 2.15 kg (sin_memoria)
