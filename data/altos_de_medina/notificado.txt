@@ -1,1 +1,1 @@
-nivel:0.16/0.56/0.18;sin_satelite:0.17/0.56/0.19;completo:0.21/0.62/0.17;solo_satelite:-0.20/-0.06/0.29
+nivel:0.16/0.56/0.18;sin_satelite:0.17/0.56/0.19;completo:0.21/0.62/0.17;sin_memoria:-0.15/0.02/0.28;solo_satelite:-0.20/-0.06/0.29
