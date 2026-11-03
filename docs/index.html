@@ -74,6 +74,7 @@
 <main>
   <div id="mapa"></div>
   <div id="lado">
+    <div id="estimacion"></div>
     <div id="detalle"></div>
     <div id="lista"></div>
   </div>
@@ -299,6 +300,37 @@ function actualizarProyeccion(p) {
   calc();
 }
 
+// Modelo v2 (crecimiento + clima + memoria de aforos + satélite). Solo se usa cuando hay aforos recientes:
+// sin ellos el modelo no es confiable (probado: R² ≈ 0), y se avisa en vez de mostrar kilos inventados.
+function aplicarEstimacion(datos, est) {
+  const caja = document.getElementById("estimacion");
+  if (!est) return;
+  const prec = (est.precision || {}).completo || {};
+  const errSem = prec.finca_semana ? fmt(prec.finca_semana.rmse) : "—", errFr = prec.franja ? fmt(prec.franja.rmse) : "—";
+  let usados = 0;
+  for (const f of datos.features) {
+    const p = f.properties, e = est.potreros[p.nombre];
+    if (!e || e.modelo !== "completo") continue;
+    p.kg_curva = p.kg_fv_m2;
+    p.kg_fv_m2 = e.kg; p.ultima_fecha = est.fecha; p.fuente = "modelo v2"; p.ml = e;
+    p.t_fv_potrero = Math.round(e.kg * p.area_pasto_ha * 10 * 10) / 10;
+    usados++;
+  }
+  const ultimo = est.ultimo_aforo_campo, dias = diasDesde(ultimo);
+  if (usados) {
+    caja.innerHTML = `<div class="caja"><b>Nivel estimado hoy</b> (modelo v2: satélite + clima + aforos recientes)
+      <table style="margin-top:6px"><tr><th>Sub-finca</th><th>kg FV/m²</th><th>Franjas</th></tr>
+      ${est.subfincas.filter(s => s.modelo === "completo").map(s => `<tr><td>${esc(s.finca)}</td><td>${fmt(s.kg)}</td><td>${s.n}</td></tr>`).join("")}</table>
+      <div class="meta">Error típico: ±${errSem} kg por sub-finca y semana · ±${errFr} kg por franja. Último aforo de campo: ${ultimo}.</div></div>`;
+  } else {
+    caja.innerHTML = `<div class="caja pobre"><b>Sin aforos recientes: el modelo v2 no puede estimar hoy.</b><br>
+      Los aforos de platómetro cargados llegan hasta el <b>${ultimo}</b> (hace ${dias} días). Sin aforos de los últimos 30 días
+      el modelo no es confiable (lo probamos: explica ~0 % de la variación), así que no se muestran sus kilos.
+      Cargando los aforos nuevos, el mapa vuelve a estimar cada franja con un error típico de ±${errSem} kg por sub-finca y semana.
+      Mientras tanto, los colores son solo la curva de NDVI.</div>`;
+  }
+}
+
 function mostrar(nombre) {
   activo = nombre;
   document.querySelectorAll(".tarjeta").forEach(t => t.classList.toggle("activa", t.dataset.n === nombre));
@@ -319,6 +351,7 @@ function mostrar(nombre) {
   det.innerHTML = `<h2>${esc(p.nombre)}</h2>
     <div class="meta">${esc(p.especie_nombre)} · ${p.ultima_fecha ? esc(p.fuente) + " del " + p.ultima_fecha : "sin imagen útil todavía"}</div>
     <div class="meta">${fmt(p.area_ha)} ha${p.pct_arboles >= 0.005 ? ` · <b>${fmt(p.area_pasto_ha)} ha en pasto</b> · <span style="color:${COLOR_ARBOL}">■</span> ${fmt(p.area_ha - p.area_pasto_ha)} ha de árboles (${Math.round(p.pct_arboles * 100)} %)` : ""}</div>
+    ${p.ml ? `<div class="meta proy">Modelo v2 (satélite + clima + aforos recientes)${p.kg_curva != null ? ` · curva NDVI sola: ${fmt(p.kg_curva)} kg` : ""}</div>` : ""}
     <div class="fila" style="margin:8px 0"><div><span class="valor">${fmt(p.kg_fv_m2)}</span> <span class="unidad">kg FV/m²</span></div>
     <div><span class="valor">${fmt(p.t_fv_potrero, 1)}</span> <span class="unidad">t FV en el potrero</span></div></div>
     ${p.pct_pobre != null ? `<div class="meta ${p.pct_pobre >= 0.1 ? "pobre" : ""}">Cobertura pobre (menos de ${fmt(datosGlobal.umbral_pobre, 1)} kg FV/m²): <b>${Math.round(p.pct_pobre * 100)} %</b> del potrero · imagen del ${p.ultima_fecha_satelite}</div>` : ""}
@@ -343,15 +376,18 @@ fetch("fincas.json", { cache: "no-store" }).then(r => r.ok ? r.json() : []).catc
   return Promise.all([
     fetch(BASE + "datos.json", { cache: "no-store" }).then(r => r.json()),
     fetch(BASE + "pixeles/indice.json", { cache: "no-store" }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
+    fetch(BASE + "estimacion_hoy.json", { cache: "no-store" }).then(r => r.ok ? r.json() : null).catch(() => null),
   ]);
-}).then(([datos, indice]) => {
+}).then(([datos, indice, est]) => {
   datosGlobal = datos;
   indicePixeles = indice;
+  aplicarEstimacion(datos, est);
   const act = new Date(datos.actualizado);
   document.getElementById("actualizado").textContent =
     `Actualizado ${act.toLocaleString("es-CO", { dateStyle: "medium", timeStyle: "short" })} · ${datos.features.length} potreros · ${datos.aforos_total || 0} aforos de campo`;
   if (datos.modelo && datos.modelo.startsWith("calibrado"))
-    document.getElementById("aviso").innerHTML = `Modelo <b>${esc(datos.modelo)}</b>. Las demás especies siguen sin calibrar.`;
+    document.getElementById("aviso").innerHTML = `Curva NDVI → kilos <b>ajustada con aforos</b> (${esc(datos.modelo.replace("calibrado con aforos: ", ""))}),
+      pero el NDVI solo tiene poca precisión por franja. <a href="modelo/?finca=${esc((datos.finca || {}).id || "")}">Ver qué tan bien estima</a>.`;
   if (!datos.features.length) {
     document.getElementById("lista").innerHTML = '<div class="tarjeta">No hay potreros. Sube un archivo .kml, .kmz o .geojson a la carpeta <b>potreros/</b>.</div>';
     mapa.setView([4.6, -74.1], 6);

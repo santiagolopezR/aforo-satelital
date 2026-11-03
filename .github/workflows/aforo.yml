@@ -11,6 +11,8 @@ on:
       - "potreros/**"
       - "config.json"
       - "aforo.py"
+      - "estimar_hoy.py"
+      - "variables_v2.py"
       - "aforos_campo/**"
       - "pastoreos/**"
       - "exclusiones/**"
@@ -41,6 +43,10 @@ jobs:
       - run: python aforo.py
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Estimación de hoy con el modelo v2 (fincas con aforos de campo)
+        continue-on-error: true
+        run: python estimar_hoy.py altos_de_medina 2>&1 | tee data/altos_de_medina/log_estimar_hoy.txt
 
       - name: Guardar resultados
         env:

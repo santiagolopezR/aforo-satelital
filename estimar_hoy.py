@@ -29,7 +29,7 @@ import variables_v2 as v2
 VENTANA = dataset_ml.VENTANA   # s2: 20, s1: 12, l: 16 días
 
 
-def clima_reciente(potreros, dias=95):
+def clima_reciente(potreros, dias=92):   # 92 es el máximo que permite Open-Meteo
     """Clima diario de los últimos días hasta ayer (Open-Meteo, mismo formato que dataset_ml.clima)."""
     c = unary_union([p["geom"] for p in potreros]).centroid
     r = requests.get("https://api.open-meteo.com/v1/forecast", timeout=60, params={
