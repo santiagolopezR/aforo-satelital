@@ -108,10 +108,17 @@ def main(slug):
     obs_s2 = dataset_ml._cargar(carpeta / "ml_s2.csv")
     v2.agregar_s2_finca(aforos, v2.escenas_por_finca(obs_s2, finca_de))
 
+    # --- Memoria con TODOS los aforos cargados (también los que llegaron después de armar la tabla de entrenamiento)
+    memoria = []
+    for a in aforo.leer_aforos(potreros):
+        memoria.append({"potrero": a["potrero"], "finca": finca_de.get(a["potrero"], a["potrero"].rsplit(" ", 1)[0]),
+                        "_f": dt.date.fromisoformat(a["fecha"]), "_y": float(a["kg_fv_m2"])})
+    memoria.sort(key=lambda a: a["_f"])
+
     # --- Filas de hoy, una por potrero
     hoy = dt.date.today()
     ultimo_aforo = {}
-    for a in aforos:
+    for a in memoria:
         ultimo_aforo[a["potrero"]] = a["_f"]
     hoy_filas = []
     for p in potreros:
@@ -123,7 +130,7 @@ def main(slug):
     met = clima_reciente(potreros)
     v2.agregar_clima(hoy_filas, met)
     v2.agregar_crecimiento(hoy_filas, v2.balance_y_crecimiento(met))
-    v2.agregar_memoria(hoy_filas, aforos)
+    v2.agregar_memoria(hoy_filas, memoria)
 
     ultimo = ultimos_satelites(potreros, config, exclusiones, carpeta)
     for r in hoy_filas:
@@ -155,7 +162,7 @@ def main(slug):
                      for c in json.loads(ruta_v2.read_text(encoding="utf-8"))["configuraciones"]}
     salida = {"finca": aforo.FINCA, "fecha": hoy.isoformat(),
               "generado": dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes"),
-              "ultimo_aforo_campo": aforos[-1]["fecha"], "precision": precision, "potreros": {}, "subfincas": []}
+              "ultimo_aforo_campo": memoria[-1]["_f"].isoformat() if memoria else None, "precision": precision, "potreros": {}, "subfincas": []}
     por_fin = {}
     for r in hoy_filas:
         clave = "completo" if np.isfinite(v2.num(r.get("nivel_finca_30d"))) else "sin_memoria"

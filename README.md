@@ -133,6 +133,14 @@ también deja potreros completos por fuera. Compara: solo NDVI, todas las bandas
 solo radar (días nublados) y un control sin satélite. Resultados en la página `docs/modelo/` (R², error, real vs estimado
 y qué variables pesan más). Todo corre en el workflow "Historico para calibrar".
 
+## Cargar aforos nuevos de Altos de Medina (Excel)
+En el PC: copiar el Excel actualizado a `D:\MAPA Altos de Medina Claude\SOLTAR EXCEL AFOROS\` y hacer doble clic en
+`CARGAR AFOROS.bat`. Corre `cargar_aforos_excel.py`, que lee solo la hoja ROTACION-AFORO-CONSUMO, saca los aforos
+(fecha, finca, potrero, kg/m², área, vacas, días de ocupación y rotación, colchón), los **suma** a
+`aforos_campo/altos_de_medina_platometro.csv` sin borrar nada y sube solo ese archivo. **El Excel no se sube**
+(el repositorio es público). Con eso: el mapa estima el aforo de hoy con memoria (`estimar_hoy.py`) y el workflow
+"Historico para calibrar" rearma la tabla y recalibra el modelo v2.
+
 ## Limitaciones
 - El píxel es de 10 m: potreros de menos de ~0,3 ha dan datos pobres.
 - Con muchas semanas nubladas, el dato queda viejo (el tablero avisa si tiene más de 10 días).

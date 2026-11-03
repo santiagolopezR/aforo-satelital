@@ -14,6 +14,7 @@ on:
       - "dataset_ml.py"
       - "entrenar_ml.py"
       - "modelo_v2.py"
+      - "aforos_campo/altos_de_medina_platometro.csv"   # aforos nuevos: rearma la tabla y recalibra
       - ".github/workflows/historico.yml"
 
 permissions:
@@ -57,6 +58,9 @@ jobs:
         run: python modelo_v2.py "$FINCA" 2>&1 | tee "data/$FINCA/log_modelo_v2.txt"
       - name: Recalibrar con todo
         run: python aforo.py
+      - name: Estimación de hoy con el modelo recalibrado
+        continue-on-error: true
+        run: python estimar_hoy.py "$FINCA" 2>&1 | tee "data/$FINCA/log_estimar_hoy.txt"
       - name: Avisar por GitHub si hay resultados nuevos del modelo
         continue-on-error: true
         env:
