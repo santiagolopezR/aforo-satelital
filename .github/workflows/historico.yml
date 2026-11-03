@@ -7,7 +7,7 @@ on:
         description: "Finca (id de config.json, p. ej. altos_de_medina)"
         default: "altos_de_medina"
   schedule:
-    - cron: "40 */6 * * *"   # sigue donde quedó hasta terminar; luego solo revisa que no falte nada
+    - cron: "40 7 * * 1"     # lunes: revisa si hay aforos o imágenes nuevas y recalibra
   push:
     paths:
       - "historico.py"
