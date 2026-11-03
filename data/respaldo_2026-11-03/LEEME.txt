@@ -1,0 +1,6 @@
+Respaldo antes de cambiar al mapa "POTREROS FINCA PUERTO PARRA 2026-10-19" (nombres nuevos).
+- la_holanda.geojson, especies.csv: potreros y especies con los nombres anteriores.
+- historial.csv: historial satelital completo con los nombres anteriores.
+- pastoreos.csv, aforos.csv: registros de campo con los nombres anteriores.
+- equivalencias.json: nombre viejo -> nombre nuevo (por superposición de los dibujos) y potreros cuya forma cambió
+  (su historial satelital se recalcula con el dibujo nuevo; los datos viejos quedan aquí).
